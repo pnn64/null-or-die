@@ -115,7 +115,20 @@ fn scan_one(path: &Path, root: &Path) -> SimfileScan {
             music_tag: Some(summary.music_path),
             charts: charts_from_summary(&summary.charts),
         },
-        Err(err) => read_error(path, &rel, format!("rssp analyze failed: {err}")),
+        Err(err) => SimfileScan {
+            simfile_path: path.display().to_string(),
+            simfile_rel: rel,
+            simfile_md5: digest,
+            extension: ext,
+            status: "error".to_string(),
+            error: Some(format!("rssp analyze failed: {err}")),
+            title: None,
+            subtitle: None,
+            artist: None,
+            offset_seconds: None,
+            music_tag: None,
+            charts: Vec::new(),
+        },
     }
 }
 

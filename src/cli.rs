@@ -14,6 +14,7 @@ pub struct Cli {
 pub enum Command {
     Analyze(AnalyzeCmd),
     Parity(ParityCmd),
+    Harness(HarnessCmd),
     Plot(PlotCmd),
 }
 
@@ -76,6 +77,65 @@ pub struct ParityCmd {
 
     #[arg(long = "fail-on-missing")]
     pub fail_on_missing: bool,
+}
+
+#[derive(Debug, Parser)]
+pub struct HarnessCmd {
+    pub root_path: PathBuf,
+
+    #[arg(short = 'b', long = "baseline", alias = "baseline-path")]
+    pub baseline_path: PathBuf,
+
+    #[arg(short = 'o', long)]
+    pub output: Option<PathBuf>,
+
+    #[arg(long = "python", default_value = "python3")]
+    pub python_bin: String,
+
+    #[arg(long = "source-root")]
+    pub source_root: Option<PathBuf>,
+
+    #[arg(long = "scratch")]
+    pub scratch_path: Option<PathBuf>,
+
+    #[arg(long = "keep-scratch")]
+    pub keep_scratch: bool,
+
+    #[arg(long = "overwrite")]
+    pub overwrite: bool,
+
+    #[arg(long = "zstd-level", default_value_t = 19)]
+    pub zstd_level: i32,
+
+    #[arg(long = "consider-null", action = ArgAction::SetFalse, default_value_t = true)]
+    pub consider_null: bool,
+
+    #[arg(long = "consider-p9ms", action = ArgAction::SetFalse, default_value_t = true)]
+    pub consider_p9ms: bool,
+
+    #[arg(short = 't', long, default_value_t = 4.0)]
+    pub tolerance: f64,
+
+    #[arg(short = 'f', long = "fingerprint", default_value_t = 50.0)]
+    pub fingerprint_ms: f64,
+
+    #[arg(short = 'w', long = "window", default_value_t = 10.0)]
+    pub window_ms: f64,
+
+    #[arg(short = 's', long = "step", default_value_t = 0.2)]
+    pub step_ms: f64,
+
+    #[arg(long = "magic-offset", default_value_t = 0.0)]
+    pub magic_offset_ms: f64,
+
+    #[arg(long = "kernel-target", default_value = "digest")]
+    pub kernel_target: String,
+
+    #[arg(long = "kernel-type", default_value = "rising")]
+    pub kernel_type: String,
+
+    #[arg(long = "full-spectrogram")]
+    pub full_spectrogram: bool,
 }
 
 #[derive(Debug, Parser)]

@@ -2,6 +2,7 @@ mod analyze;
 mod cli;
 mod compat;
 mod fs_scan;
+mod harness;
 mod model;
 mod parity;
 mod plot;
@@ -30,6 +31,10 @@ pub fn run() -> Result<(), String> {
             } else {
                 Ok(())
             }
+        }
+        cli::Command::Harness(args) => {
+            let report = harness::run(&args)?;
+            write_json(&report, args.output.as_deref())
         }
         cli::Command::Plot(args) => {
             let report = plot::run(&args)?;

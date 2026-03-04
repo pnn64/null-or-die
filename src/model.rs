@@ -95,6 +95,32 @@ pub struct ParityReport {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HarnessCase {
+    pub simfile_rel: String,
+    pub simfile_md5: String,
+    pub baseline_rel: String,
+    pub status: String,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HarnessReport {
+    pub tool: String,
+    pub version: String,
+    pub mode: String,
+    pub root_path: String,
+    pub baseline_path: String,
+    pub python_bin: String,
+    pub source_root: Option<String>,
+    pub scratch_path: String,
+    pub total_simfiles: usize,
+    pub written: usize,
+    pub skipped_existing: usize,
+    pub failed: usize,
+    pub cases: Vec<HarnessCase>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlotReport {
     pub tool: String,
     pub version: String,
