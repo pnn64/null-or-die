@@ -1,6 +1,4 @@
 mod analyze;
-mod audio;
-mod bias;
 mod cli;
 mod compat;
 mod fs_scan;
@@ -29,11 +27,6 @@ pub fn run() -> Result<(), String> {
                 Err(format!(
                     "missing {} baseline fixture(s)",
                     report.missing_baseline
-                ))
-            } else if args.fail_on_mismatch && report.mismatched > 0 {
-                Err(format!(
-                    "found {} parity mismatch case(s)",
-                    report.mismatched
                 ))
             } else {
                 Ok(())

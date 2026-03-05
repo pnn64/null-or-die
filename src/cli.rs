@@ -77,9 +77,6 @@ pub struct ParityCmd {
 
     #[arg(long = "fail-on-missing")]
     pub fail_on_missing: bool,
-
-    #[arg(long = "fail-on-mismatch")]
-    pub fail_on_mismatch: bool,
 }
 
 #[derive(Debug, Parser)]

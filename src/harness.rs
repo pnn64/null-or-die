@@ -78,6 +78,7 @@ def chart_rows(args, base_simfile, simfile_dir, nine_or_null, params):
     for chart_index, chart in enumerate(base_simfile.charts):
         if has_own_timing(chart):
             charts_within.append(chart_index)
+    base_music = base_simfile.get("MUSIC", "")
 
     rows = []
     for chart_index in charts_within:
@@ -103,6 +104,7 @@ def chart_rows(args, base_simfile, simfile_dir, nine_or_null, params):
                 "steps_type": None,
                 "difficulty": None,
                 "description": None,
+                "music": base_music,
                 "chart_has_own_timing": False,
                 "bias_ms": bias,
                 "confidence": confidence,
@@ -130,6 +132,7 @@ def chart_rows(args, base_simfile, simfile_dir, nine_or_null, params):
                 "steps_type": steps_type,
                 "difficulty": difficulty,
                 "description": description,
+                "music": chart.get("MUSIC") or base_music,
                 "chart_has_own_timing": has_own_timing(chart),
                 "bias_ms": bias,
                 "confidence": confidence,
@@ -465,11 +468,17 @@ fn bool_str(value: bool) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::fixture_rel_for_md5;
+    use super::{PY_REF_SCRIPT, fixture_rel_for_md5};
 
     #[test]
     fn fixture_path_shards_and_compresses() {
         let rel = fixture_rel_for_md5("abcdef0123456789abcdef0123456789");
         assert_eq!(rel, "ab/abcdef0123456789abcdef0123456789.json.zst");
+    }
+
+    #[test]
+    fn python_fixture_rows_include_music_tag() {
+        assert!(PY_REF_SCRIPT.contains("\"music\": base_music"));
+        assert!(PY_REF_SCRIPT.contains("\"music\": chart.get(\"MUSIC\") or base_music"));
     }
 }

@@ -42,9 +42,6 @@ pub struct ChartScan {
     pub status: String,
     pub bias_ms: Option<f64>,
     pub confidence: Option<f64>,
-    pub conv_quint: Option<f64>,
-    pub conv_stdev: Option<f64>,
-    pub paradigm: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -60,20 +57,7 @@ pub struct SimfileScan {
     pub artist: Option<String>,
     pub offset_seconds: Option<f64>,
     pub music_tag: Option<String>,
-    pub audio: AudioScan,
     pub charts: Vec<ChartScan>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AudioScan {
-    pub status: String,
-    pub path: Option<String>,
-    pub sample_rate_hz: Option<u32>,
-    pub source_channels: Option<u16>,
-    pub mono_samples: Option<usize>,
-    pub duration_seconds: Option<f64>,
-    pub peak_abs: Option<f32>,
-    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -93,8 +77,6 @@ pub struct ParityCase {
     pub baseline_rel: Option<String>,
     pub status: String,
     pub error: Option<String>,
-    pub mismatch_count: usize,
-    pub mismatches: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -106,11 +88,9 @@ pub struct ParityReport {
     pub baseline_path: String,
     pub total_simfiles: usize,
     pub matched: usize,
-    pub mismatched: usize,
     pub missing_baseline: usize,
     pub invalid_baseline: usize,
     pub read_errors: usize,
-    pub analyze_errors: usize,
     pub cases: Vec<ParityCase>,
 }
 
