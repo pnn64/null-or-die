@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use rssp::{AnalysisOptions, analyze};
 
 use crate::audio::{OggDecode, decode_ogg_mono_like_python};
-use crate::bias::{BiasCfg, estimate_bias};
+use crate::bias::{BiasCfg, BiasRuntime, estimate_bias_reuse};
 use crate::cli::AnalyzeCmd;
 use crate::compat::guess_paradigm;
 use crate::compat::slot_abbreviation;
@@ -279,11 +279,18 @@ fn apply_bias_estimates(
     bias_cfg: &BiasCfg,
 ) {
     let mut cache = Vec::new();
+    let mut bias_rt = BiasRuntime::default();
     for (i, chart) in summary_charts.iter().enumerate() {
         let scan = &mut chart_scans[i];
         let music_tag = chart_music.get(i).map_or("", String::as_str);
         match decode_song_audio_cached(simfile_path, music_tag, &mut cache) {
-            Ok(audio) => match estimate_bias(&audio.mono, audio.sample_rate_hz, chart, bias_cfg) {
+            Ok(audio) => match estimate_bias_reuse(
+                &audio.mono,
+                audio.sample_rate_hz,
+                chart,
+                bias_cfg,
+                &mut bias_rt,
+            ) {
                 Ok(est) => write_bias(
                     scan,
                     est.bias_ms,

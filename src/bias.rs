@@ -38,11 +38,54 @@ struct Setup {
     spectrogram_offset: f64,
 }
 
+#[derive(Default)]
+pub struct BiasRuntime {
+    spectrogram: Vec<SpectrogramCacheEntry>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct SpectrogramKey {
+    sample_rate_hz: u32,
+    nperseg: usize,
+    nstep: usize,
+}
+
+struct SpectrogramCacheEntry {
+    key: SpectrogramKey,
+    ctx: SpectrogramCtx,
+}
+
+impl BiasRuntime {
+    fn spectrogram_ctx(&mut self, key: SpectrogramKey) -> &mut SpectrogramCtx {
+        if let Some(i) = self.spectrogram.iter().position(|entry| entry.key == key) {
+            return &mut self.spectrogram[i].ctx;
+        }
+        self.spectrogram.push(SpectrogramCacheEntry {
+            key,
+            ctx: SpectrogramCtx::new(key.nperseg),
+        });
+        let last = self.spectrogram.len() - 1;
+        &mut self.spectrogram[last].ctx
+    }
+}
+
+#[allow(dead_code)]
 pub fn estimate_bias(
     audio_mono: &[f32],
     sample_rate_hz: u32,
     chart: &rssp::ChartSummary,
     cfg: &BiasCfg,
+) -> Result<BiasEstimate, String> {
+    let mut runtime = BiasRuntime::default();
+    estimate_bias_reuse(audio_mono, sample_rate_hz, chart, cfg, &mut runtime)
+}
+
+pub fn estimate_bias_reuse(
+    audio_mono: &[f32],
+    sample_rate_hz: u32,
+    chart: &rssp::ChartSummary,
+    cfg: &BiasCfg,
+    runtime: &mut BiasRuntime,
 ) -> Result<BiasEstimate, String> {
     let setup = build_setup(audio_mono.len(), sample_rate_hz, cfg)?;
     let timing = rssp::timing::timing_data_from_segments(
@@ -50,7 +93,7 @@ pub fn estimate_bias(
         0.0,
         &chart.timing_segments,
     );
-    estimate_bias_with_timing_setup(audio_mono, sample_rate_hz, &timing, cfg, setup)
+    estimate_bias_with_timing_setup(audio_mono, sample_rate_hz, &timing, cfg, setup, runtime)
 }
 
 #[allow(dead_code)]
@@ -60,10 +103,23 @@ pub fn estimate_bias_with_timing(
     timing: &rssp::timing::TimingData,
     cfg: &BiasCfg,
 ) -> Result<BiasEstimate, String> {
-    let setup = build_setup(audio_mono.len(), sample_rate_hz, cfg)?;
-    estimate_bias_with_timing_setup(audio_mono, sample_rate_hz, timing, cfg, setup)
+    let mut runtime = BiasRuntime::default();
+    estimate_bias_with_timing_reuse(audio_mono, sample_rate_hz, timing, cfg, &mut runtime)
 }
 
+#[allow(dead_code)]
+pub fn estimate_bias_with_timing_reuse(
+    audio_mono: &[f32],
+    sample_rate_hz: u32,
+    timing: &rssp::timing::TimingData,
+    cfg: &BiasCfg,
+    runtime: &mut BiasRuntime,
+) -> Result<BiasEstimate, String> {
+    let setup = build_setup(audio_mono.len(), sample_rate_hz, cfg)?;
+    estimate_bias_with_timing_setup(audio_mono, sample_rate_hz, timing, cfg, setup, runtime)
+}
+
+#[allow(dead_code)]
 pub fn estimate_bias_with_beat_fn<F>(
     audio_mono: &[f32],
     sample_rate_hz: u32,
@@ -73,8 +129,22 @@ pub fn estimate_bias_with_beat_fn<F>(
 where
     F: FnMut(usize) -> f64,
 {
+    let mut runtime = BiasRuntime::default();
+    estimate_bias_with_beat_fn_reuse(audio_mono, sample_rate_hz, cfg, &mut runtime, beat_time_fn)
+}
+
+pub fn estimate_bias_with_beat_fn_reuse<F>(
+    audio_mono: &[f32],
+    sample_rate_hz: u32,
+    cfg: &BiasCfg,
+    runtime: &mut BiasRuntime,
+    beat_time_fn: F,
+) -> Result<BiasEstimate, String>
+where
+    F: FnMut(usize) -> f64,
+{
     let setup = build_setup(audio_mono.len(), sample_rate_hz, cfg)?;
-    estimate_bias_with_setup(audio_mono, sample_rate_hz, cfg, setup, beat_time_fn)
+    estimate_bias_with_setup(audio_mono, sample_rate_hz, cfg, setup, runtime, beat_time_fn)
 }
 
 fn estimate_bias_with_timing_setup(
@@ -83,10 +153,16 @@ fn estimate_bias_with_timing_setup(
     timing: &rssp::timing::TimingData,
     cfg: &BiasCfg,
     setup: Setup,
+    runtime: &mut BiasRuntime,
 ) -> Result<BiasEstimate, String> {
-    estimate_bias_with_setup(audio_mono, sample_rate_hz, cfg, setup, |beat| {
-        rssp::timing::get_time_for_beat(timing, beat as f64)
-    })
+    estimate_bias_with_setup(
+        audio_mono,
+        sample_rate_hz,
+        cfg,
+        setup,
+        runtime,
+        |beat| rssp::timing::get_time_for_beat(timing, beat as f64),
+    )
 }
 
 fn estimate_bias_with_setup<F>(
@@ -94,6 +170,7 @@ fn estimate_bias_with_setup<F>(
     sample_rate_hz: u32,
     cfg: &BiasCfg,
     setup: Setup,
+    runtime: &mut BiasRuntime,
     beat_time_fn: F,
 ) -> Result<BiasEstimate, String>
 where
@@ -103,7 +180,13 @@ where
     if windows.is_empty() {
         return Err("no beat windows produced for bias calculation".to_string());
     }
-    let (acc, digest, beats) = build_fingerprints(audio_mono, sample_rate_hz, setup, &windows)?;
+    let key = SpectrogramKey {
+        sample_rate_hz,
+        nperseg: setup.nperseg,
+        nstep: setup.nstep,
+    };
+    let sp = runtime.spectrogram_ctx(key);
+    let (acc, digest, beats) = build_fingerprints(audio_mono, sample_rate_hz, setup, &windows, sp)?;
     let (rows, cols, target) = if cfg.kernel_target == KernelTarget::Accumulator {
         (setup.n_freq_taps, setup.fp_size, acc)
     } else {
@@ -206,14 +289,14 @@ struct SpectrogramCtx {
 }
 
 impl SpectrogramCtx {
-    fn new(nperseg: usize, rows: usize, cols: usize) -> Self {
+    fn new(nperseg: usize) -> Self {
         let mut planner = FftPlanner::<f64>::new();
         let fft = planner.plan_fft_forward(nperseg);
         Self {
             fft,
             window: hann_periodic(nperseg),
             buf: vec![Complex::new(0.0, 0.0); nperseg],
-            out: vec![0.0; rows * cols],
+            out: Vec::new(),
         }
     }
 }
@@ -223,13 +306,13 @@ fn build_fingerprints(
     sample_rate_hz: u32,
     setup: Setup,
     windows: &[(usize, usize)],
+    sp: &mut SpectrogramCtx,
 ) -> Result<(Vec<f64>, Vec<f64>, usize), String> {
     let rows = setup.n_freq_taps;
     let cols = setup.fp_size;
     let mut acc = vec![0.0; rows * cols];
     let mut digest = Vec::with_capacity(windows.len() * cols);
     let weights = frequency_weights(sample_rate_hz, setup.nperseg, rows);
-    let mut sp = SpectrogramCtx::new(setup.nperseg, rows, cols);
     let mut digest_row = vec![0.0; cols];
     let mut beats = 0usize;
     for (t_s, t_f) in windows {
@@ -245,7 +328,7 @@ fn build_fingerprints(
             setup.nstep,
             rows,
             cols,
-            &mut sp,
+            sp,
         ) {
             continue;
         }
@@ -506,8 +589,23 @@ fn rivaling_strength(value: f64, median: f64, vmax: f64) -> f64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{make_kernel, percentile};
-    use crate::model::BiasKernel;
+    use super::{
+        BiasCfg, BiasRuntime, estimate_bias_with_beat_fn, estimate_bias_with_beat_fn_reuse,
+        make_kernel, percentile,
+    };
+    use crate::model::{BiasKernel, KernelTarget};
+
+    fn bias_cfg() -> BiasCfg {
+        BiasCfg {
+            fingerprint_ms: 50.0,
+            window_ms: 10.0,
+            step_ms: 0.2,
+            magic_offset_ms: 0.0,
+            kernel_target: KernelTarget::Digest,
+            kernel_type: BiasKernel::Rising,
+            _full_spectrogram: false,
+        }
+    }
 
     #[test]
     fn percentile_linear_interp_matches_expected() {
@@ -524,5 +622,45 @@ mod tests {
         assert_eq!(rising[2], 0.0);
         assert!(rising[0] > rising[4]);
         assert_eq!(loud[2], 10.0);
+    }
+
+    #[test]
+    fn fft_runtime_reuse_matches_one_shot() {
+        let sample_rate = 4_000u32;
+        let len = (sample_rate as usize) * 4;
+        let mut audio = Vec::with_capacity(len);
+        for i in 0..len {
+            let t = i as f32 * 0.01;
+            audio.push((t.sin() * (t * 0.1).cos()) * 0.8);
+        }
+        let cfg = bias_cfg();
+        let one_shot =
+            estimate_bias_with_beat_fn(&audio, sample_rate, &cfg, |beat| beat as f64 * 0.25)
+                .expect("one-shot estimate should succeed");
+        let mut runtime = BiasRuntime::default();
+        let first = estimate_bias_with_beat_fn_reuse(
+            &audio,
+            sample_rate,
+            &cfg,
+            &mut runtime,
+            |beat| beat as f64 * 0.25,
+        )
+        .expect("first cached estimate should succeed");
+        let second = estimate_bias_with_beat_fn_reuse(
+            &audio,
+            sample_rate,
+            &cfg,
+            &mut runtime,
+            |beat| beat as f64 * 0.25,
+        )
+        .expect("second cached estimate should succeed");
+        assert!((one_shot.bias_ms - first.bias_ms).abs() < 1e-12);
+        assert!((one_shot.confidence - first.confidence).abs() < 1e-12);
+        assert!((one_shot.conv_quint - first.conv_quint).abs() < 1e-12);
+        assert!((one_shot.conv_stdev - first.conv_stdev).abs() < 1e-12);
+        assert!((first.bias_ms - second.bias_ms).abs() < 1e-12);
+        assert!((first.confidence - second.confidence).abs() < 1e-12);
+        assert!((first.conv_quint - second.conv_quint).abs() < 1e-12);
+        assert!((first.conv_stdev - second.conv_stdev).abs() < 1e-12);
     }
 }

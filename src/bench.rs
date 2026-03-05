@@ -6,7 +6,7 @@ use rssp::{AnalysisOptions, analyze};
 use serde::Serialize;
 
 use crate::audio::decode_ogg_mono_like_python;
-use crate::bias::{BiasCfg, estimate_bias};
+use crate::bias::{BiasCfg, BiasRuntime, estimate_bias_reuse};
 use crate::cli::BenchCmd;
 use crate::model::{BiasKernel, KernelTarget};
 
@@ -81,8 +81,9 @@ fn run_once(path: &Path, cfg: &BiasCfg) -> Result<RunSample, String> {
     let decode_audio = decode_start.elapsed();
 
     let bias_start = Instant::now();
+    let mut bias_rt = BiasRuntime::default();
     for chart in &summary.charts {
-        estimate_bias(&decode.mono, decode.sample_rate_hz, chart, cfg)
+        estimate_bias_reuse(&decode.mono, decode.sample_rate_hz, chart, cfg, &mut bias_rt)
             .map_err(|e| format!("bias estimation failed: {e}"))?;
     }
     let bias_estimation = bias_start.elapsed();

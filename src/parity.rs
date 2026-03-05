@@ -6,7 +6,7 @@ use rssp::{AnalysisOptions, analyze};
 use serde::Deserialize;
 
 use crate::audio::{OggDecode, decode_ogg_mono_like_python};
-use crate::bias::{BiasCfg, estimate_bias_with_beat_fn};
+use crate::bias::{BiasCfg, BiasRuntime, estimate_bias_with_beat_fn_reuse};
 use crate::cli::ParityCmd;
 use crate::compat::{guess_paradigm, slot_abbreviation};
 use crate::fs_scan::{baseline_rel_for_md5, discover_simfiles, md5_hex, rel_path};
@@ -197,6 +197,7 @@ fn compare_baseline_inner(
         )
     })?;
     let mut cache = Vec::new();
+    let mut bias_rt = BiasRuntime::default();
     for row in &baseline.charts {
         compare_row(
             row,
@@ -206,6 +207,7 @@ fn compare_baseline_inner(
             song_dir,
             &cfg,
             &mut cache,
+            &mut bias_rt,
             &mut state,
         )?;
     }
@@ -220,6 +222,7 @@ fn compare_row(
     song_dir: &Path,
     cfg: &BiasCfg,
     cache: &mut Vec<AudioCacheEntry>,
+    bias_rt: &mut BiasRuntime,
     state: &mut CompareState,
 ) -> Result<(), String> {
     state.note(format!("  {}", chart_label(row)));
@@ -254,9 +257,13 @@ fn compare_row(
         if !row_has_bias_fields(row) {
             return Ok(());
         }
-        let est = estimate_bias_with_beat_fn(&decode.mono, decode.sample_rate_hz, cfg, |beat| {
-            global_timing.time_at_stop(beat as f64)
-        })
+        let est = estimate_bias_with_beat_fn_reuse(
+            &decode.mono,
+            decode.sample_rate_hz,
+            cfg,
+            bias_rt,
+            |beat| global_timing.time_at_stop(beat as f64),
+        )
         .map_err(|e| format!("{} bias estimation failed: {e}", chart_label(row)))?;
         compare_base_row_fields(row, baseline, &est, state);
         return Ok(());
@@ -294,9 +301,13 @@ fn compare_row(
         return Ok(());
     }
     let timing = chart_timing_data(summary, chart, global_timing)?;
-    let est = estimate_bias_with_beat_fn(&decode.mono, decode.sample_rate_hz, cfg, |beat| {
-        timing.time_at_stop(beat as f64)
-    })
+    let est = estimate_bias_with_beat_fn_reuse(
+        &decode.mono,
+        decode.sample_rate_hz,
+        cfg,
+        bias_rt,
+        |beat| timing.time_at_stop(beat as f64),
+    )
     .map_err(|e| format!("{} bias estimation failed: {e}", chart_label(row)))?;
     compare_row_fields(row, baseline, chart, &est, state);
     Ok(())
