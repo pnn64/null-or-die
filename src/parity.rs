@@ -155,7 +155,12 @@ fn compare_row(
     if !row_needs_audio(row) {
         return Ok(());
     }
-    let Some(music_tag) = chart_music_tag(row, &baseline.music, &summary.music_path) else {
+    let Some(music_tag) = chart_music_tag(
+        row,
+        &baseline.music,
+        None,
+        &summary.music_path,
+    ) else {
         mismatches.push(format!("{} missing music tag", chart_label(row)));
         return Ok(());
     };
@@ -390,11 +395,13 @@ fn chart_for_row(
 fn chart_music_tag<'a>(
     row: &'a BaselineChart,
     root_music: &'a str,
+    chart_music: Option<&'a str>,
     summary_music: &'a str,
 ) -> Option<&'a str> {
     row.music
         .as_deref()
         .and_then(non_empty_trim)
+        .or_else(|| chart_music.and_then(non_empty_trim))
         .or_else(|| non_empty_trim(root_music))
         .or_else(|| non_empty_trim(summary_music))
 }
@@ -758,15 +765,19 @@ mod tests {
             paradigm: None,
         };
         assert_eq!(
-            chart_music_tag(&row_with, "base.ogg", "summary.ogg"),
+            chart_music_tag(&row_with, "base.ogg", Some("chart.ogg"), "summary.ogg"),
             Some("split.ogg")
         );
         assert_eq!(
-            chart_music_tag(&row_without, "base.ogg", "summary.ogg"),
+            chart_music_tag(&row_without, "base.ogg", Some("chart.ogg"), "summary.ogg"),
+            Some("chart.ogg")
+        );
+        assert_eq!(
+            chart_music_tag(&row_without, "base.ogg", None, "summary.ogg"),
             Some("base.ogg")
         );
         assert_eq!(
-            chart_music_tag(&row_without, " ", "summary.ogg"),
+            chart_music_tag(&row_without, " ", None, "summary.ogg"),
             Some("summary.ogg")
         );
     }

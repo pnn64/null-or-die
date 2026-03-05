@@ -1,7 +1,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use rssp::parse::{decode_bytes, extract_sections, unescape_tag};
 use rssp::{AnalysisOptions, analyze};
 
 use crate::audio::{OggDecode, decode_ogg_mono_like_python};
@@ -108,7 +107,7 @@ fn scan_one(path: &Path, root: &Path, params: &AnalyzeParams, bias_cfg: &BiasCfg
     match analyze(&bytes, &ext, &options) {
         Ok(summary) => {
             let mut charts = charts_from_summary(&summary.charts);
-            let chart_music = chart_music_tags(&bytes, &ext, &summary.music_path, charts.len());
+            let chart_music = chart_music_tags(&summary.charts, &summary.music_path);
             assign_chart_music(&mut charts, &chart_music);
             apply_bias_estimates(
                 path,
@@ -208,29 +207,17 @@ fn bias_cfg_from_params(params: &AnalyzeParams) -> BiasCfg {
     }
 }
 
-fn chart_music_tags(bytes: &[u8], ext: &str, fallback: &str, chart_count: usize) -> Vec<String> {
-    let mut tags = vec![fallback.to_string(); chart_count];
-    let Ok(parsed) = extract_sections(bytes, ext) else {
-        return tags;
-    };
-    for (i, entry) in parsed.notes_list.iter().enumerate().take(chart_count) {
-        let own = entry.chart_music.as_deref().and_then(decode_music_tag);
-        if let Some(tag) = own {
-            tags[i] = tag;
-        }
-    }
-    tags
+fn chart_music_tags(charts: &[rssp::ChartSummary], fallback: &str) -> Vec<String> {
+    charts
+        .iter()
+        .map(|_| choose_music_tag(None, fallback))
+        .collect()
 }
 
-fn decode_music_tag(raw: &[u8]) -> Option<String> {
-    let decoded = decode_bytes(raw);
-    let unescaped = unescape_tag(decoded.as_ref());
-    let trimmed = unescaped.trim();
-    if trimmed.is_empty() {
-        None
-    } else {
-        Some(trimmed.to_string())
-    }
+fn choose_music_tag(chart_music: Option<&str>, fallback: &str) -> String {
+    let own = chart_music.map(str::trim).filter(|s| !s.is_empty());
+    let root = fallback.trim();
+    own.unwrap_or(root).to_string()
 }
 
 fn assign_chart_music(charts: &mut [ChartScan], tags: &[String]) {
@@ -364,46 +351,18 @@ fn is_ogg_path(path: &Path) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::chart_music_tags;
+    use super::choose_music_tag;
 
     #[test]
-    fn ssc_chart_music_overrides_global() {
-        let ssc = br#"
-#TITLE:T;
-#MUSIC:base.ogg;
-#NOTEDATA:;
-#STEPSTYPE:dance-single;
-#DIFFICULTY:Hard;
-#MUSIC:split.ogg;
-#NOTES:
-0000
-;
-#NOTEDATA:;
-#STEPSTYPE:dance-single;
-#DIFFICULTY:Challenge;
-#NOTES:
-0000
-;
-"#;
-        let tags = chart_music_tags(ssc, "ssc", "base.ogg", 2);
-        assert_eq!(tags, vec!["split.ogg".to_string(), "base.ogg".to_string()]);
+    fn choose_music_prefers_chart_value() {
+        assert_eq!(
+            choose_music_tag(Some(" split.ogg "), "base.ogg"),
+            "split.ogg".to_string()
+        );
     }
 
     #[test]
-    fn sm_chart_music_uses_fallback() {
-        let sm = br#"
-#TITLE:T;
-#MUSIC:base.ogg;
-#NOTES:
-dance-single:
-:
-Hard:
-9:
-:
-0000
-;
-"#;
-        let tags = chart_music_tags(sm, "sm", "base.ogg", 1);
-        assert_eq!(tags, vec!["base.ogg".to_string()]);
+    fn choose_music_falls_back_to_root() {
+        assert_eq!(choose_music_tag(None, "base.ogg"), "base.ogg".to_string());
     }
 }
