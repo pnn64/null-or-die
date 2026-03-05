@@ -8,7 +8,7 @@ use serde::Deserialize;
 use crate::audio::{OggDecode, decode_ogg_mono_like_python};
 use crate::bias::{BiasCfg, estimate_bias};
 use crate::cli::ParityCmd;
-use crate::compat::guess_paradigm;
+use crate::compat::{guess_paradigm, slot_abbreviation};
 use crate::fs_scan::{baseline_rel_for_md5, discover_simfiles, md5_hex, rel_path};
 use crate::model::{BiasKernel, KernelTarget, ParityCase, ParityReport};
 
@@ -105,12 +105,7 @@ fn compare_baseline(
     simfile_bytes: &[u8],
     baseline: &BaselineFixture,
 ) -> Result<Option<String>, String> {
-    let rows = baseline
-        .charts
-        .iter()
-        .filter(|r| row_has_bias_fields(r))
-        .collect::<Vec<_>>();
-    if rows.is_empty() {
+    if baseline.charts.is_empty() {
         return Ok(None);
     }
     let ext = simfile_ext(simfile_path);
@@ -125,8 +120,8 @@ fn compare_baseline(
     })?;
     let mut cache = Vec::new();
     let mut mismatches = Vec::new();
-    for row in rows {
-        compare_row_bias(
+    for row in &baseline.charts {
+        compare_row(
             row,
             baseline,
             &summary,
@@ -143,7 +138,7 @@ fn compare_baseline(
     }
 }
 
-fn compare_row_bias(
+fn compare_row(
     row: &BaselineChart,
     baseline: &BaselineFixture,
     summary: &rssp::SimfileSummary,
@@ -156,6 +151,10 @@ fn compare_row_bias(
         mismatches.push(format!("{} missing in simfile summary", chart_label(row)));
         return Ok(());
     };
+    compare_row_meta(row, chart, mismatches);
+    if !row_needs_audio(row) {
+        return Ok(());
+    }
     let Some(music_tag) = chart_music_tag(row, &baseline.music, &summary.music_path) else {
         mismatches.push(format!("{} missing music tag", chart_label(row)));
         return Ok(());
@@ -176,15 +175,67 @@ fn compare_row_bias(
     }
     let decode = decode_cached(&audio_path, cache)
         .map_err(|e| format!("{} audio decode failed: {e}", chart_label(row)))?;
+    compare_sample_rate(row, decode.sample_rate_hz, mismatches);
+    if !row_has_bias_fields(row) {
+        return Ok(());
+    }
     let est = estimate_bias(&decode.mono, decode.sample_rate_hz, chart, cfg)
         .map_err(|e| format!("{} bias estimation failed: {e}", chart_label(row)))?;
-    compare_row_fields(row, baseline, &est, mismatches);
+    compare_row_fields(row, baseline, chart, &est, mismatches);
     Ok(())
+}
+
+fn compare_row_meta(row: &BaselineChart, chart: &rssp::ChartSummary, mismatches: &mut Vec<String>) {
+    compare_opt_text(
+        row,
+        "steps_type",
+        row.steps_type.as_deref(),
+        Some(chart.step_type_str.as_str()),
+        mismatches,
+    );
+    compare_opt_text(
+        row,
+        "difficulty",
+        row.difficulty.as_deref(),
+        Some(chart.difficulty_str.as_str()),
+        mismatches,
+    );
+    compare_opt_text(
+        row,
+        "description",
+        row.description.as_deref(),
+        Some(chart.description_str.as_str()),
+        mismatches,
+    );
+    if let Some(base) = row.chart_has_own_timing
+        && base != chart.chart_has_own_timing
+    {
+        mismatches.push(format!(
+            "{}.chart_has_own_timing mismatch: baseline={base} expected={}",
+            chart_label(row),
+            chart.chart_has_own_timing
+        ));
+    }
+    compare_opt_text(
+        row,
+        "slot_null",
+        row.slot_null.as_deref(),
+        Some(expected_slot_value(row, chart, "null").as_str()),
+        mismatches,
+    );
+    compare_opt_text(
+        row,
+        "slot_p9ms",
+        row.slot_p9ms.as_deref(),
+        Some(expected_slot_value(row, chart, "+9ms").as_str()),
+        mismatches,
+    );
 }
 
 fn compare_row_fields(
     row: &BaselineChart,
     baseline: &BaselineFixture,
+    chart: &rssp::ChartSummary,
     est: &crate::bias::BiasEstimate,
     mismatches: &mut Vec<String>,
 ) {
@@ -220,23 +271,77 @@ fn compare_row_fields(
         CONV_TOL,
         mismatches,
     );
+    let expected_paradigm = guess_paradigm(
+        est.bias_ms,
+        baseline.params.tolerance,
+        baseline.params.consider_null,
+        baseline.params.consider_p9ms,
+        true,
+    );
     if let Some(base) = normalize_opt_text(row.paradigm.as_deref()) {
-        let expected = guess_paradigm(
-            est.bias_ms,
-            baseline.params.tolerance,
-            baseline.params.consider_null,
-            baseline.params.consider_p9ms,
-            true,
-        );
-        if base != expected {
+        if base != expected_paradigm {
             mismatches.push(format!(
                 "{}.paradigm mismatch: baseline={:?} expected={:?}",
                 chart_label(row),
                 base,
-                expected
+                expected_paradigm
             ));
         }
     }
+    compare_opt_text(
+        row,
+        "slot",
+        row.slot.as_deref(),
+        Some(expected_slot_value(row, chart, expected_paradigm).as_str()),
+        mismatches,
+    );
+}
+
+fn compare_sample_rate(row: &BaselineChart, expected: u32, mismatches: &mut Vec<String>) {
+    let Some(base) = row.sample_rate else { return };
+    if base != expected {
+        mismatches.push(format!(
+            "{}.sample_rate mismatch: baseline={base} expected={expected}",
+            chart_label(row)
+        ));
+    }
+}
+
+fn compare_opt_text(
+    row: &BaselineChart,
+    field: &str,
+    baseline: Option<&str>,
+    expected: Option<&str>,
+    mismatches: &mut Vec<String>,
+) {
+    let Some(base) = normalize_opt_text(baseline) else {
+        return;
+    };
+    let expect = expected.and_then(non_empty_trim).unwrap_or("");
+    if base != expect {
+        mismatches.push(format!(
+            "{}.{field} mismatch: baseline={:?} expected={:?}",
+            chart_label(row),
+            base,
+            expect
+        ));
+    }
+}
+
+fn expected_slot_value(row: &BaselineChart, chart: &rssp::ChartSummary, paradigm: &str) -> String {
+    if row.chart_index.is_none() {
+        return "*".to_string();
+    }
+    slot_abbreviation(
+        &chart.step_type_str,
+        &chart.difficulty_str,
+        row.chart_index.unwrap_or(0),
+        paradigm,
+    )
+}
+
+fn row_needs_audio(row: &BaselineChart) -> bool {
+    row.sample_rate.is_some() || row_has_bias_fields(row)
 }
 
 fn compare_float(
@@ -482,7 +587,23 @@ struct BaselineChart {
     #[serde(default)]
     chart_index: Option<usize>,
     #[serde(default)]
+    steps_type: Option<String>,
+    #[serde(default)]
+    difficulty: Option<String>,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    slot: Option<String>,
+    #[serde(default)]
+    slot_null: Option<String>,
+    #[serde(default)]
+    slot_p9ms: Option<String>,
+    #[serde(default)]
+    chart_has_own_timing: Option<bool>,
+    #[serde(default)]
     music: Option<String>,
+    #[serde(default)]
+    sample_rate: Option<u32>,
     #[serde(default)]
     bias_ms: Option<f64>,
     #[serde(default)]
@@ -604,7 +725,15 @@ mod tests {
     fn chart_music_prefers_row_then_root_then_summary() {
         let row_with = BaselineChart {
             chart_index: Some(2),
+            steps_type: None,
+            difficulty: None,
+            description: None,
+            slot: None,
+            slot_null: None,
+            slot_p9ms: None,
+            chart_has_own_timing: None,
             music: Some("split.ogg".to_string()),
+            sample_rate: None,
             bias_ms: None,
             confidence: None,
             conv_quint: None,
@@ -613,7 +742,15 @@ mod tests {
         };
         let row_without = BaselineChart {
             chart_index: Some(3),
+            steps_type: None,
+            difficulty: None,
+            description: None,
+            slot: None,
+            slot_null: None,
+            slot_p9ms: None,
+            chart_has_own_timing: None,
             music: None,
+            sample_rate: None,
             bias_ms: None,
             confidence: None,
             conv_quint: None,
@@ -653,6 +790,40 @@ mod tests {
         assert!(r2.is_ok());
         assert!(r3.is_ok());
         assert_eq!(calls, 2);
+    }
+
+    #[test]
+    fn parity_detects_metadata_mismatch() {
+        let temp = temp_root("parity-meta");
+        let root = temp.join("packs");
+        let song = root.join("PackA").join("SongA");
+        fs::create_dir_all(&song).expect("mkdir song");
+        let simfile = song.join("chart.sm");
+        let bytes =
+            b"#TITLE:Meta;#BPMS:0.000=120.000;#NOTES:dance-single:desc:Easy:1:0,0,0,0:0000\n;";
+        fs::write(&simfile, bytes).expect("write simfile");
+
+        let md5 = md5_hex(bytes);
+        let baseline = temp.join("baseline");
+        let shard = baseline.join(&md5[0..2]);
+        fs::create_dir_all(&shard).expect("mkdir shard");
+        fs::write(
+            shard.join(format!("{md5}.json")),
+            r#"{"charts":[{"chart_index":0,"steps_type":"dance-double"}]}"#,
+        )
+        .expect("write baseline");
+
+        let args = ParityCmd {
+            root_path: PathBuf::from(&root),
+            baseline_path: PathBuf::from(&baseline),
+            output: None,
+            fail_on_missing: false,
+            fail_on_mismatch: false,
+        };
+        let report = run(&args).expect("run parity");
+        assert_eq!(report.total_simfiles, 1);
+        assert_eq!(report.mismatched, 1);
+        let _ = fs::remove_dir_all(temp);
     }
 
     fn temp_root(tag: &str) -> PathBuf {
