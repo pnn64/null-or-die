@@ -4,12 +4,12 @@ Terminal-first Rust reimplementation scaffold for `nine-or-null` parity work.
 
 ## Current status
 
-- `rnon analyze <path>`: scans simfiles, parses chart metadata through `rssp`, emits JSON.
+- `rnon analyze <path>`: scans simfiles, parses chart metadata through `rssp`, decodes OGG audio, and computes native bias metrics per chart.
 - `rnon parity <path> --baseline <dir>`: validates MD5-sharded fixtures and checks native bias outputs against baseline chart rows (including split `#MUSIC` rows).
 - `rnon harness <path> --baseline <dir>`: runs Python `nine-or-null` reference analysis and writes canonical `json.zst` fixtures.
 - `rnon plot <input.json> <out.png>`: draws bias markers from JSON (`bias_ms`, `bias_result`, or `bias`).
 
-`analyze` is still scaffold-level, but `parity` now executes native bias math for fixture comparison.
+`analyze` and `parity` now share the native bias math path.
 
 For `harness`, `--source-root` should point to the Python package root containing `nine_or_null/` (for example `nine-or-null-0.8.0/nine-or-null`). If omitted, `rnon` auto-detects that sibling path from the current working directory.
 

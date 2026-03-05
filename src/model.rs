@@ -42,6 +42,9 @@ pub struct ChartScan {
     pub status: String,
     pub bias_ms: Option<f64>,
     pub confidence: Option<f64>,
+    pub conv_quint: Option<f64>,
+    pub conv_stdev: Option<f64>,
+    pub paradigm: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
