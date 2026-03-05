@@ -83,6 +83,7 @@ pub struct BiasStreamInit {
     pub sample_rate_hz: u32,
     pub cols: usize,
     pub freq_rows: usize,
+    pub planned_beats: usize,
     pub kernel_target: KernelTarget,
     pub times_ms: Vec<f64>,
     pub freqs_khz: Vec<f64>,
@@ -644,11 +645,22 @@ where
     };
     let sp = runtime.spectrogram_ctx(key);
     let mut collector = trace_cfg.map(TraceCollector::new);
-    if let Some(s) = stream.as_deref_mut() {
-        emit_stream_init(s, sample_rate_hz, setup, cfg.kernel_target);
-    }
     let use_full_spectrogram = cfg._full_spectrogram
         && should_use_full_spectrogram(audio_mono.len(), setup, window_stats.windows.len());
+    if let Some(s) = stream.as_deref_mut() {
+        emit_stream_init(
+            s,
+            sample_rate_hz,
+            setup,
+            cfg.kernel_target,
+            count_stream_beats(
+                audio_mono.len(),
+                setup,
+                window_stats.windows.as_slice(),
+                use_full_spectrogram,
+            ),
+        );
+    }
     let (acc, digest, beats) = build_fingerprints(
         audio_mono,
         sample_rate_hz,
@@ -775,6 +787,7 @@ fn emit_stream_init(
     sample_rate_hz: u32,
     setup: Setup,
     kernel_target: KernelTarget,
+    planned_beats: usize,
 ) {
     let hz_step = f64::from(sample_rate_hz) / setup.nperseg as f64;
     let freqs_khz = (0..setup.n_freq_taps)
@@ -784,11 +797,38 @@ fn emit_stream_init(
         sample_rate_hz,
         cols: setup.fp_size,
         freq_rows: setup.n_freq_taps,
+        planned_beats,
         kernel_target,
         times_ms: fingerprint_times_ms(setup.fp_size, setup.actual_step_sec),
         freqs_khz,
         orientation: stream.cfg.orientation,
     }));
+}
+
+fn count_stream_beats(
+    audio_len: usize,
+    setup: Setup,
+    windows: &[BeatWindow],
+    use_full_spectrogram: bool,
+) -> usize {
+    if use_full_spectrogram {
+        let full_cols = 1 + (audio_len - setup.nperseg) / setup.nstep;
+        return windows
+            .iter()
+            .filter(|w| {
+                window_matches_legacy_rules(audio_len, setup, w.t_s, w.t_f, setup.fp_size, full_cols)
+            })
+            .count();
+    }
+    windows
+        .iter()
+        .filter(|w| {
+            let sample_s = w.t_s.saturating_mul(setup.nstep);
+            let sample_f =
+                (w.t_f.saturating_mul(setup.nstep) + setup.nperseg.saturating_sub(1)).min(audio_len);
+            sample_f > sample_s + setup.nperseg
+        })
+        .count()
 }
 
 fn beat_windows_from_fn<F>(
