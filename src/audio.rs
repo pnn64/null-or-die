@@ -36,7 +36,7 @@ pub fn decode_ogg_mono_like_python(path: &Path) -> Result<OggDecode, String> {
 }
 
 fn decoder_pref() -> Option<String> {
-    std::env::var("RNON_AUDIO_DECODER")
+    std::env::var("NOD_AUDIO_DECODER")
         .ok()
         .map(|s| s.trim().to_ascii_lowercase())
         .filter(|s| !s.is_empty())

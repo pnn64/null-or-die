@@ -1,13 +1,13 @@
 [package]
-name = "rnon"
-version = "0.0.20"
+name = "nod"
+version = "0.0.21"
 edition = "2024"
 
 [dependencies]
 clap = { version = "4.5.32", features = ["derive"] }
 lewton = "0.10.2"
 md5 = "0.8.0"
-png = "0.18.0"
+png = "0.18.1"
 rssp = { path = "src/extern/rssp" }
 rustfft = "6.4.1"
 serde = { version = "1.0.228", features = ["derive"] }

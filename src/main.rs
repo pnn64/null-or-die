@@ -1,5 +1,5 @@
 fn main() {
-    if let Err(err) = rnon::run() {
+    if let Err(err) = nod::run() {
         eprintln!("{err}");
         std::process::exit(1);
     }

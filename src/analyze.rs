@@ -42,7 +42,7 @@ pub fn run(args: &AnalyzeCmd) -> Result<AnalyzeReport, String> {
         })
         .collect::<Vec<_>>();
     Ok(AnalyzeReport {
-        tool: "rnon".to_string(),
+        tool: "nod".to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
         mode: "scan".to_string(),
         params,
@@ -60,13 +60,13 @@ struct TraceCtl {
 
 impl TraceCtl {
     fn from_env() -> Self {
-        let enabled = env_bool("RNON_BIAS_TRACE");
-        let keep = env::var("RNON_BIAS_TRACE_KEEP")
+        let enabled = env_bool("NOD_BIAS_TRACE");
+        let keep = env::var("NOD_BIAS_TRACE_KEEP")
             .ok()
             .and_then(|v| v.parse::<usize>().ok())
             .map(|v| v.max(1))
             .unwrap_or(24);
-        let tokens = env::var("RNON_BIAS_TRACE_FILTER")
+        let tokens = env::var("NOD_BIAS_TRACE_FILTER")
             .ok()
             .map(|raw| {
                 raw.split([',', ';'])
@@ -76,7 +76,7 @@ impl TraceCtl {
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
-        let dump_dir = env::var("RNON_BIAS_TRACE_DIR")
+        let dump_dir = env::var("NOD_BIAS_TRACE_DIR")
             .ok()
             .map(|v| PathBuf::from(v.trim()))
             .filter(|p| !p.as_os_str().is_empty());
@@ -676,7 +676,7 @@ fn dump_trace(
         .and_then(|s| s.to_str())
         .unwrap_or("simfile");
     let safe_sim = sanitize_file_stem(sim_stem);
-    let out_path = dump_dir.join(format!("rnon-trace-{safe_sim}-chart{chart_index}.json"));
+    let out_path = dump_dir.join(format!("nod-trace-{safe_sim}-chart{chart_index}.json"));
     let payload = AnalyzeTraceDump {
         simfile_path: simfile_path.display().to_string(),
         chart_index,
