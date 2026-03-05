@@ -387,7 +387,7 @@ dependencies = [
 
 [[package]]
 name = "rssp"
-version = "0.3.55"
+version = "0.3.28"
 dependencies = [
  "png",
  "serde_json",

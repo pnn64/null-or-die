@@ -36,6 +36,7 @@ pub struct ChartScan {
     pub steps_type: String,
     pub difficulty: String,
     pub description: String,
+    pub music_tag: Option<String>,
     pub slot_null: String,
     pub slot_p9ms: String,
     pub chart_has_own_timing: bool,

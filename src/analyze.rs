@@ -1,6 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use rssp::parse::{decode_bytes, extract_sections, unescape_tag};
 use rssp::{AnalysisOptions, analyze};
 
 use crate::audio::{OggDecode, decode_ogg_mono_like_python};
@@ -107,12 +108,16 @@ fn scan_one(path: &Path, root: &Path, params: &AnalyzeParams, bias_cfg: &BiasCfg
     match analyze(&bytes, &ext, &options) {
         Ok(summary) => {
             let mut charts = charts_from_summary(&summary.charts);
-            match decode_song_audio(path, &summary.music_path) {
-                Ok(audio) => {
-                    apply_bias_estimates(&summary.charts, &mut charts, &audio, params, bias_cfg)
-                }
-                Err(err) => mark_audio_unavailable(&mut charts, &err),
-            }
+            let chart_music = chart_music_tags(&bytes, &ext, &summary.music_path, charts.len());
+            assign_chart_music(&mut charts, &chart_music);
+            apply_bias_estimates(
+                path,
+                &summary.charts,
+                &mut charts,
+                &chart_music,
+                params,
+                bias_cfg,
+            );
             SimfileScan {
                 simfile_path: path.display().to_string(),
                 simfile_rel: rel,
@@ -154,6 +159,7 @@ fn charts_from_summary(charts: &[rssp::ChartSummary]) -> Vec<ChartScan> {
             steps_type: chart.step_type_str.clone(),
             difficulty: chart.difficulty_str.clone(),
             description: chart.description_str.clone(),
+            music_tag: None,
             slot_null: slot_abbreviation(&chart.step_type_str, &chart.difficulty_str, i, "null"),
             slot_p9ms: slot_abbreviation(&chart.step_type_str, &chart.difficulty_str, i, "+9ms"),
             chart_has_own_timing: chart.chart_has_own_timing,
@@ -202,7 +208,46 @@ fn bias_cfg_from_params(params: &AnalyzeParams) -> BiasCfg {
     }
 }
 
-fn decode_song_audio(simfile_path: &Path, music_tag: &str) -> Result<OggDecode, String> {
+fn chart_music_tags(bytes: &[u8], ext: &str, fallback: &str, chart_count: usize) -> Vec<String> {
+    let mut tags = vec![fallback.to_string(); chart_count];
+    let Ok(parsed) = extract_sections(bytes, ext) else {
+        return tags;
+    };
+    for (i, entry) in parsed.notes_list.iter().enumerate().take(chart_count) {
+        let own = entry.chart_music.as_deref().and_then(decode_music_tag);
+        if let Some(tag) = own {
+            tags[i] = tag;
+        }
+    }
+    tags
+}
+
+fn decode_music_tag(raw: &[u8]) -> Option<String> {
+    let decoded = decode_bytes(raw);
+    let unescaped = unescape_tag(decoded.as_ref());
+    let trimmed = unescaped.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+fn assign_chart_music(charts: &mut [ChartScan], tags: &[String]) {
+    for (chart, tag) in charts.iter_mut().zip(tags.iter()) {
+        let trimmed = tag.trim();
+        if !trimmed.is_empty() {
+            chart.music_tag = Some(trimmed.to_string());
+        }
+    }
+}
+
+struct AudioCacheEntry {
+    path: PathBuf,
+    decode: Result<OggDecode, String>,
+}
+
+fn resolve_song_audio_path(simfile_path: &Path, music_tag: &str) -> Result<PathBuf, String> {
     let Some(song_dir) = simfile_path.parent() else {
         return Err("simfile has no parent directory".to_string());
     };
@@ -212,51 +257,95 @@ fn decode_song_audio(simfile_path: &Path, music_tag: &str) -> Result<OggDecode, 
     if !is_ogg_path(&audio_path) {
         return Err(format!("unsupported audio format {}", audio_path.display()));
     }
-    decode_ogg_mono_like_python(&audio_path)
+    Ok(audio_path)
+}
+
+fn decode_song_audio(audio_path: &Path) -> Result<OggDecode, String> {
+    decode_ogg_mono_like_python(audio_path)
+}
+
+fn decode_song_audio_cached(
+    simfile_path: &Path,
+    music_tag: &str,
+    cache: &mut Vec<AudioCacheEntry>,
+) -> Result<OggDecode, String> {
+    let path = resolve_song_audio_path(simfile_path, music_tag)?;
+    for entry in cache.iter() {
+        if entry.path == path {
+            return entry.decode.clone();
+        }
+    }
+    let decode = decode_song_audio(&path);
+    cache.push(AudioCacheEntry {
+        path,
+        decode: decode.clone(),
+    });
+    decode
 }
 
 fn apply_bias_estimates(
+    simfile_path: &Path,
     summary_charts: &[rssp::ChartSummary],
     chart_scans: &mut [ChartScan],
-    audio: &OggDecode,
+    chart_music: &[String],
     params: &AnalyzeParams,
     bias_cfg: &BiasCfg,
 ) {
+    let mut cache = Vec::new();
     for (i, chart) in summary_charts.iter().enumerate() {
         let scan = &mut chart_scans[i];
-        match estimate_bias(&audio.mono, audio.sample_rate_hz, chart, bias_cfg) {
-            Ok(est) => {
-                scan.status = "computed".to_string();
-                scan.bias_ms = Some(est.bias_ms);
-                scan.confidence = Some(est.confidence);
-                scan.conv_quint = Some(est.conv_quint);
-                scan.conv_stdev = Some(est.conv_stdev);
-                scan.paradigm = Some(
-                    guess_paradigm(
-                        est.bias_ms,
-                        params.tolerance,
-                        params.consider_null,
-                        params.consider_p9ms,
-                        true,
-                    )
-                    .to_string(),
-                );
-            }
+        let music_tag = chart_music.get(i).map_or("", String::as_str);
+        match decode_song_audio_cached(simfile_path, music_tag, &mut cache) {
+            Ok(audio) => match estimate_bias(&audio.mono, audio.sample_rate_hz, chart, bias_cfg) {
+                Ok(est) => write_bias(
+                    scan,
+                    est.bias_ms,
+                    est.confidence,
+                    est.conv_quint,
+                    est.conv_stdev,
+                    params,
+                ),
+                Err(err) => write_bias_error(scan, &err),
+            },
             Err(err) => {
-                scan.status = "bias_error".to_string();
+                scan.status = "audio_unavailable".to_string();
                 scan.paradigm = Some("????".to_string());
-                scan.description = append_error(&scan.description, &format!("bias_error: {err}"));
+                scan.description =
+                    append_error(&scan.description, &format!("audio_unavailable: {err}"));
             }
         }
     }
 }
 
-fn mark_audio_unavailable(charts: &mut [ChartScan], err: &str) {
-    for chart in charts {
-        chart.status = "audio_unavailable".to_string();
-        chart.paradigm = Some("????".to_string());
-        chart.description = append_error(&chart.description, &format!("audio_unavailable: {err}"));
-    }
+fn write_bias(
+    scan: &mut ChartScan,
+    bias_ms: f64,
+    confidence: f64,
+    conv_quint: f64,
+    conv_stdev: f64,
+    params: &AnalyzeParams,
+) {
+    scan.status = "computed".to_string();
+    scan.bias_ms = Some(bias_ms);
+    scan.confidence = Some(confidence);
+    scan.conv_quint = Some(conv_quint);
+    scan.conv_stdev = Some(conv_stdev);
+    scan.paradigm = Some(
+        guess_paradigm(
+            bias_ms,
+            params.tolerance,
+            params.consider_null,
+            params.consider_p9ms,
+            true,
+        )
+        .to_string(),
+    );
+}
+
+fn write_bias_error(scan: &mut ChartScan, err: &str) {
+    scan.status = "bias_error".to_string();
+    scan.paradigm = Some("????".to_string());
+    scan.description = append_error(&scan.description, &format!("bias_error: {err}"));
 }
 
 fn append_error(desc: &str, extra: &str) -> String {
@@ -271,4 +360,50 @@ fn is_ogg_path(path: &Path) -> bool {
     path.extension()
         .and_then(|s| s.to_str())
         .is_some_and(|s| s.eq_ignore_ascii_case("ogg"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::chart_music_tags;
+
+    #[test]
+    fn ssc_chart_music_overrides_global() {
+        let ssc = br#"
+#TITLE:T;
+#MUSIC:base.ogg;
+#NOTEDATA:;
+#STEPSTYPE:dance-single;
+#DIFFICULTY:Hard;
+#MUSIC:split.ogg;
+#NOTES:
+0000
+;
+#NOTEDATA:;
+#STEPSTYPE:dance-single;
+#DIFFICULTY:Challenge;
+#NOTES:
+0000
+;
+"#;
+        let tags = chart_music_tags(ssc, "ssc", "base.ogg", 2);
+        assert_eq!(tags, vec!["split.ogg".to_string(), "base.ogg".to_string()]);
+    }
+
+    #[test]
+    fn sm_chart_music_uses_fallback() {
+        let sm = br#"
+#TITLE:T;
+#MUSIC:base.ogg;
+#NOTES:
+dance-single:
+:
+Hard:
+9:
+:
+0000
+;
+"#;
+        let tags = chart_music_tags(sm, "sm", "base.ogg", 1);
+        assert_eq!(tags, vec!["base.ogg".to_string()]);
+    }
 }
