@@ -25,11 +25,34 @@ pub struct BiasCfg {
     pub _full_spectrogram: bool,
 }
 
+#[derive(Clone, Copy)]
 pub struct BiasEstimate {
     pub bias_ms: f64,
     pub confidence: f64,
     pub conv_quint: f64,
     pub conv_stdev: f64,
+}
+
+pub struct BiasPlotData {
+    pub freq_rows: usize,
+    pub digest_rows: usize,
+    pub cols: usize,
+    pub post_rows: usize,
+    pub post_target: KernelTarget,
+    pub freq_domain: Vec<f64>,
+    pub beat_digest: Vec<f64>,
+    pub post_kernel: Vec<f64>,
+    pub convolution: Vec<f64>,
+    pub times_ms: Vec<f64>,
+    pub freqs_khz: Vec<f64>,
+    pub beat_indices: Vec<f64>,
+    pub bias_ms: f64,
+    pub edge_discard: usize,
+}
+
+pub struct BiasEstimateWithPlot {
+    pub estimate: BiasEstimate,
+    pub plot: BiasPlotData,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -167,19 +190,32 @@ struct TraceCollector {
 enum BiasResult {
     Estimate(BiasEstimate),
     WithTrace(BiasEstimate, BiasTrace),
+    WithPlot(BiasEstimateWithPlot),
 }
 
 impl BiasResult {
     fn into_estimate(self) -> BiasEstimate {
         match self {
             Self::Estimate(v) | Self::WithTrace(v, _) => v,
+            Self::WithPlot(v) => v.estimate,
         }
     }
 
     fn into_pair(self) -> Result<(BiasEstimate, BiasTrace), String> {
         match self {
             Self::WithTrace(v, t) => Ok((v, t)),
-            Self::Estimate(_) => Err("bias trace requested but not produced".to_string()),
+            Self::Estimate(_) | Self::WithPlot(_) => {
+                Err("bias trace requested but not produced".to_string())
+            }
+        }
+    }
+
+    fn into_plot(self) -> Result<BiasEstimateWithPlot, String> {
+        match self {
+            Self::WithPlot(v) => Ok(v),
+            Self::Estimate(_) | Self::WithTrace(_, _) => {
+                Err("bias plot requested but not produced".to_string())
+            }
         }
     }
 }
@@ -297,8 +333,35 @@ pub fn estimate_bias_reuse(
         setup,
         runtime,
         None,
+        false,
     )
     .map(BiasResult::into_estimate)
+}
+
+pub fn estimate_bias_reuse_with_plot(
+    audio_mono: &[f32],
+    sample_rate_hz: u32,
+    chart: &rssp::ChartSummary,
+    cfg: &BiasCfg,
+    runtime: &mut BiasRuntime,
+) -> Result<BiasEstimateWithPlot, String> {
+    let setup = build_setup(audio_mono.len(), sample_rate_hz, cfg)?;
+    let timing = rssp::timing::timing_data_from_segments(
+        chart.chart_offset_seconds,
+        0.0,
+        &chart.timing_segments,
+    );
+    estimate_bias_with_timing_setup(
+        audio_mono,
+        sample_rate_hz,
+        &timing,
+        cfg,
+        setup,
+        runtime,
+        None,
+        true,
+    )
+    .and_then(BiasResult::into_plot)
 }
 
 pub fn estimate_bias_reuse_with_trace(
@@ -323,6 +386,7 @@ pub fn estimate_bias_reuse_with_trace(
         setup,
         runtime,
         Some(trace_cfg),
+        false,
     )
     .and_then(BiasResult::into_pair)
 }
@@ -355,6 +419,7 @@ pub fn estimate_bias_with_timing_reuse(
         setup,
         runtime,
         None,
+        false,
     )
     .map(BiasResult::into_estimate)
 }
@@ -391,6 +456,7 @@ where
         setup,
         runtime,
         None,
+        false,
         beat_time_fn,
     )
     .map(BiasResult::into_estimate)
@@ -415,6 +481,7 @@ where
         setup,
         runtime,
         Some(trace_cfg),
+        false,
         beat_time_fn,
     )
     .and_then(BiasResult::into_pair)
@@ -428,6 +495,7 @@ fn estimate_bias_with_timing_setup(
     setup: Setup,
     runtime: &mut BiasRuntime,
     trace_cfg: Option<BiasTraceCfg>,
+    want_plot: bool,
 ) -> Result<BiasResult, String> {
     estimate_bias_with_setup(
         audio_mono,
@@ -436,6 +504,7 @@ fn estimate_bias_with_timing_setup(
         setup,
         runtime,
         trace_cfg,
+        want_plot,
         |beat| rssp::timing::get_time_for_beat(timing, beat as f64),
     )
 }
@@ -447,6 +516,7 @@ fn estimate_bias_with_setup<F>(
     setup: Setup,
     runtime: &mut BiasRuntime,
     trace_cfg: Option<BiasTraceCfg>,
+    want_plot: bool,
     beat_time_fn: F,
 ) -> Result<BiasResult, String>
 where
@@ -475,15 +545,21 @@ where
         sp,
         collector.as_mut(),
     )?;
-    let (rows, cols, target) = if cfg.kernel_target == KernelTarget::Accumulator {
-        (setup.n_freq_taps, setup.fp_size, acc)
+    let (rows, cols) = if cfg.kernel_target == KernelTarget::Accumulator {
+        (setup.n_freq_taps, setup.fp_size)
     } else {
-        (beats, setup.fp_size, digest)
+        (beats, setup.fp_size)
     };
     let kernel = make_kernel(cfg.kernel_type);
-    let post = convolve_wrap_5x5(&target, rows, cols, &kernel);
+    let post = if cfg.kernel_target == KernelTarget::Accumulator {
+        convolve_wrap_5x5(&acc, rows, cols, &kernel)
+    } else {
+        convolve_wrap_5x5(&digest, rows, cols, &kernel)
+    };
     let flat = flatten_columns_sum(&post, rows, cols);
     let conv_stats = estimate_from_convolution(&flat, setup.actual_step_sec, cfg.magic_offset_ms)?;
+    let bias_ms = conv_stats.estimate.bias_ms;
+    let edge_discard = conv_stats.convolution.edge_discard;
     if let Some(collector) = collector {
         let setup_trace = BiasTraceSetup {
             sample_rate_hz,
@@ -509,6 +585,22 @@ where
             result: conv_stats.result,
         };
         Ok(BiasResult::WithTrace(conv_stats.estimate, trace))
+    } else if want_plot {
+        Ok(BiasResult::WithPlot(BiasEstimateWithPlot {
+            estimate: conv_stats.estimate,
+            plot: build_plot_data(
+                sample_rate_hz,
+                setup,
+                cfg.kernel_target,
+                acc,
+                digest,
+                beats,
+                post,
+                flat,
+                bias_ms,
+                edge_discard,
+            ),
+        }))
     } else {
         Ok(BiasResult::Estimate(conv_stats.estimate))
     }
@@ -1042,6 +1134,47 @@ fn estimate_from_convolution(
         convolution,
         result,
     })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_plot_data(
+    sample_rate_hz: u32,
+    setup: Setup,
+    post_target: KernelTarget,
+    freq_domain: Vec<f64>,
+    beat_digest: Vec<f64>,
+    beats: usize,
+    post_kernel: Vec<f64>,
+    convolution: Vec<f64>,
+    bias_ms: f64,
+    edge_discard: usize,
+) -> BiasPlotData {
+    let hz_step = f64::from(sample_rate_hz) / setup.nperseg as f64;
+    let freqs_khz = (0..setup.n_freq_taps)
+        .map(|i| i as f64 * hz_step * 1e-3)
+        .collect::<Vec<_>>();
+    let beat_indices = (0..beats).map(|i| i as f64).collect::<Vec<_>>();
+    let post_rows = if post_target == KernelTarget::Accumulator {
+        setup.n_freq_taps
+    } else {
+        beats
+    };
+    BiasPlotData {
+        freq_rows: setup.n_freq_taps,
+        digest_rows: beats,
+        cols: setup.fp_size,
+        post_rows,
+        post_target,
+        freq_domain,
+        beat_digest,
+        post_kernel,
+        convolution,
+        times_ms: fingerprint_times_ms(setup.fp_size, setup.actual_step_sec),
+        freqs_khz,
+        beat_indices,
+        bias_ms,
+        edge_discard,
+    }
 }
 
 fn fingerprint_times_ms(cols: usize, actual_step_sec: f64) -> Vec<f64> {

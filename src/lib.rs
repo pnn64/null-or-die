@@ -13,11 +13,10 @@ mod plot;
 use std::fs;
 use std::path::Path;
 
-use clap::Parser;
 use serde::Serialize;
 
 pub fn run() -> Result<(), String> {
-    let cli = cli::Cli::parse();
+    let cli = cli::Cli::parse_with_compat()?;
     match cli.command {
         cli::Command::Analyze(args) => {
             let report = analyze::run(&args)?;

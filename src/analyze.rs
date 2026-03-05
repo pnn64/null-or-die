@@ -8,7 +8,7 @@ use serde::Serialize;
 use crate::audio::{OggDecode, decode_ogg_mono_like_python};
 use crate::bias::{
     BiasCfg, BiasRuntime, BiasTrace, BiasTraceCfg, estimate_bias_reuse,
-    estimate_bias_reuse_with_trace,
+    estimate_bias_reuse_with_plot, estimate_bias_reuse_with_trace,
 };
 use crate::cli::AnalyzeCmd;
 use crate::compat::guess_paradigm;
@@ -17,6 +17,7 @@ use crate::fs_scan::{discover_simfiles, md5_hex, rel_path};
 use crate::model::{
     AnalyzeParams, AnalyzeReport, BiasKernel, ChartScan, KernelTarget, SimfileScan,
 };
+use crate::plot::write_nine_or_null_plots;
 
 pub fn run(args: &AnalyzeCmd) -> Result<AnalyzeReport, String> {
     let report_path = resolve_report_path(&args.root_path, args.report_path.as_deref())?;
@@ -28,7 +29,17 @@ pub fn run(args: &AnalyzeCmd) -> Result<AnalyzeReport, String> {
     let simfiles = discover_simfiles(&args.root_path)?;
     let scanned = simfiles
         .iter()
-        .map(|path| scan_one(path, &args.root_path, &params, &bias_cfg, &trace_ctl))
+        .map(|path| {
+            scan_one(
+                path,
+                &args.root_path,
+                &report_path,
+                args.plot,
+                &params,
+                &bias_cfg,
+                &trace_ctl,
+            )
+        })
         .collect::<Vec<_>>();
     Ok(AnalyzeReport {
         tool: "rnon".to_string(),
@@ -170,6 +181,8 @@ fn resolve_report_path(root: &Path, explicit: Option<&Path>) -> Result<PathBuf, 
 fn scan_one(
     path: &Path,
     root: &Path,
+    report_path: &Path,
+    plot_enabled: bool,
     params: &AnalyzeParams,
     bias_cfg: &BiasCfg,
     trace_ctl: &TraceCtl,
@@ -192,6 +205,10 @@ fn scan_one(
                 &summary.charts,
                 &mut charts,
                 &chart_music,
+                &summary.title_str,
+                &summary.subtitle_str,
+                report_path,
+                plot_enabled,
                 params,
                 bias_cfg,
                 trace_ctl,
@@ -354,6 +371,10 @@ fn apply_bias_estimates(
     summary_charts: &[rssp::ChartSummary],
     chart_scans: &mut [ChartScan],
     chart_music: &[String],
+    song_title: &str,
+    song_subtitle: &str,
+    report_path: &Path,
+    plot_enabled: bool,
     params: &AnalyzeParams,
     bias_cfg: &BiasCfg,
     trace_ctl: &TraceCtl,
@@ -365,7 +386,53 @@ fn apply_bias_estimates(
         let music_tag = chart_music.get(i).map_or("", String::as_str);
         match decode_song_audio_cached(simfile_path, music_tag, &mut cache) {
             Ok(audio) => {
-                if trace_ctl.matches(simfile_path, chart, i) {
+                if plot_enabled {
+                    match estimate_bias_reuse_with_plot(
+                        &audio.mono,
+                        audio.sample_rate_hz,
+                        chart,
+                        bias_cfg,
+                        &mut bias_rt,
+                    ) {
+                        Ok(est_plot) => {
+                            write_bias(
+                                scan,
+                                est_plot.estimate.bias_ms,
+                                est_plot.estimate.confidence,
+                                est_plot.estimate.conv_quint,
+                                est_plot.estimate.conv_stdev,
+                                params,
+                            );
+                            if let Err(err) = write_chart_plots(
+                                report_path,
+                                song_title,
+                                song_subtitle,
+                                chart,
+                                i,
+                                est_plot.estimate.bias_ms,
+                                params,
+                                &est_plot.plot,
+                            ) {
+                                scan.description =
+                                    append_error(&scan.description, &format!("plot_error: {err}"));
+                            }
+                            if trace_ctl.matches(simfile_path, chart, i) {
+                                let _ = dump_trace_from_chart(
+                                    simfile_path,
+                                    chart,
+                                    i,
+                                    music_tag,
+                                    params,
+                                    &audio,
+                                    bias_cfg,
+                                    trace_ctl,
+                                    &mut bias_rt,
+                                );
+                            }
+                        }
+                        Err(err) => write_bias_error(scan, &err),
+                    }
+                } else if trace_ctl.matches(simfile_path, chart, i) {
                     match estimate_bias_reuse_with_trace(
                         &audio.mono,
                         audio.sample_rate_hz,
@@ -426,6 +493,105 @@ fn apply_bias_estimates(
             }
         }
     }
+}
+
+fn dump_trace_from_chart(
+    simfile_path: &Path,
+    chart: &rssp::ChartSummary,
+    chart_index: usize,
+    music_tag: &str,
+    params: &AnalyzeParams,
+    audio: &OggDecode,
+    bias_cfg: &BiasCfg,
+    trace_ctl: &TraceCtl,
+    bias_rt: &mut BiasRuntime,
+) -> Result<(), String> {
+    let (est, trace) = estimate_bias_reuse_with_trace(
+        &audio.mono,
+        audio.sample_rate_hz,
+        chart,
+        bias_cfg,
+        bias_rt,
+        BiasTraceCfg {
+            keep: trace_ctl.keep,
+        },
+    )?;
+    dump_trace(
+        simfile_path,
+        chart,
+        chart_index,
+        music_tag,
+        params,
+        &est,
+        &trace,
+        trace_ctl,
+    )
+}
+
+fn write_chart_plots(
+    report_path: &Path,
+    song_title: &str,
+    song_subtitle: &str,
+    chart: &rssp::ChartSummary,
+    chart_index: usize,
+    bias_ms: f64,
+    params: &AnalyzeParams,
+    plot_data: &crate::bias::BiasPlotData,
+) -> Result<(), String> {
+    let guess = guess_paradigm(
+        bias_ms,
+        params.tolerance,
+        params.consider_null,
+        params.consider_p9ms,
+        true,
+    );
+    let slot = slot_abbreviation(
+        &chart.step_type_str,
+        &chart.difficulty_str,
+        chart_index,
+        guess,
+    );
+    let stem_raw = format!("{} {}", full_title(song_title, song_subtitle), slot);
+    let mut stem = slugify_ascii(&stem_raw);
+    if stem.is_empty() {
+        stem = format!("chart-{chart_index}");
+    }
+    write_nine_or_null_plots(report_path, &stem, plot_data)
+}
+
+fn full_title(title: &str, subtitle: &str) -> String {
+    let title = title.trim();
+    let subtitle = subtitle.trim();
+    if subtitle.is_empty() {
+        title.to_string()
+    } else if title.is_empty() {
+        subtitle.to_string()
+    } else {
+        format!("{title} {subtitle}")
+    }
+}
+
+fn slugify_ascii(raw: &str) -> String {
+    let mut cleaned = String::with_capacity(raw.len());
+    for ch in raw.chars() {
+        if ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' || ch.is_ascii_whitespace() {
+            cleaned.push(ch.to_ascii_lowercase());
+        }
+    }
+    let mut out = String::with_capacity(cleaned.len());
+    let mut last_dash = false;
+    for ch in cleaned.chars() {
+        if ch == '-' || ch.is_ascii_whitespace() {
+            if !last_dash {
+                out.push('-');
+            }
+            last_dash = true;
+        } else {
+            out.push(ch);
+            last_dash = false;
+        }
+    }
+    out.trim_matches(['-', '_']).to_string()
 }
 
 fn write_bias(

@@ -17,8 +17,8 @@ use crate::fs_scan::{baseline_rel_for_md5, discover_simfiles, md5_hex, rel_path}
 use crate::model::{BiasKernel, KernelTarget, ParityCase, ParityReport};
 
 const BIAS_MS_TOL: f64 = 0.25;
-const CONF_TOL: f64 = 0.01;
-const CONV_TOL: f64 = 0.01;
+const CONF_TOL: f64 = 1e-3;
+const CONV_TOL: f64 = 1e-3;
 
 struct TraceCtl {
     enabled: bool,

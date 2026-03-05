@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::{env, ffi::OsString};
 
 use clap::{ArgAction, Parser, Subcommand};
 
@@ -8,6 +9,13 @@ use clap::{ArgAction, Parser, Subcommand};
 pub struct Cli {
     #[command(subcommand)]
     pub command: Command,
+}
+
+impl Cli {
+    pub fn parse_with_compat() -> Result<Self, String> {
+        let argv = rewrite_legacy_args(env::args_os().collect())?;
+        Self::try_parse_from(argv).map_err(|e| e.to_string())
+    }
 }
 
 #[derive(Debug, Subcommand)]
@@ -22,6 +30,9 @@ pub enum Command {
 #[derive(Debug, Parser)]
 pub struct AnalyzeCmd {
     pub root_path: PathBuf,
+
+    #[arg(long)]
+    pub plot: bool,
 
     #[arg(short, long)]
     pub report_path: Option<PathBuf>,
@@ -193,4 +204,97 @@ pub struct BenchCmd {
 
     #[arg(long = "full-spectrogram")]
     pub full_spectrogram: bool,
+}
+
+fn rewrite_legacy_args(argv: Vec<OsString>) -> Result<Vec<OsString>, String> {
+    if argv.len() < 2 || has_subcommand(argv.get(1)) {
+        return Ok(argv);
+    }
+    let Some((flag_idx, subcmd)) = legacy_cmd_flag(&argv) else {
+        return Ok(argv);
+    };
+    rewrite_cmd_flag(argv, flag_idx, subcmd)
+}
+
+fn has_subcommand(arg: Option<&OsString>) -> bool {
+    matches!(
+        arg.map(|v| v.to_string_lossy().to_string()),
+        Some(cmd) if matches!(cmd.as_str(), "analyze" | "parity" | "harness" | "bench" | "plot")
+    )
+}
+
+fn legacy_cmd_flag(argv: &[OsString]) -> Option<(usize, &'static str)> {
+    argv.iter().enumerate().skip(1).find_map(|(i, arg)| {
+        let flag = arg.to_string_lossy();
+        if flag == "--analyze" || flag == "-a" {
+            Some((i, "analyze"))
+        } else if flag == "--parity" {
+            Some((i, "parity"))
+        } else if flag == "--harness" {
+            Some((i, "harness"))
+        } else if flag == "--bench" {
+            Some((i, "bench"))
+        } else {
+            None
+        }
+    })
+}
+
+fn rewrite_cmd_flag(
+    argv: Vec<OsString>,
+    flag_idx: usize,
+    subcmd: &'static str,
+) -> Result<Vec<OsString>, String> {
+    let path_idx = flag_idx + 1;
+    if path_idx >= argv.len() {
+        let flag = argv[flag_idx].to_string_lossy();
+        return Err(format!("{flag} requires a path argument"));
+    }
+    let mut out = Vec::with_capacity(argv.len() + 1);
+    out.push(argv[0].clone());
+    out.push(OsString::from(subcmd));
+    out.push(argv[path_idx].clone());
+    for (i, arg) in argv.into_iter().enumerate().skip(1) {
+        if i != flag_idx && i != path_idx {
+            out.push(arg);
+        }
+    }
+    Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::rewrite_legacy_args;
+    use std::ffi::OsString;
+
+    fn as_vec(args: &[&str]) -> Vec<OsString> {
+        args.iter().map(OsString::from).collect()
+    }
+
+    fn as_text(args: &[OsString]) -> Vec<String> {
+        args.iter()
+            .map(|v| v.to_string_lossy().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn rewrite_analyze_flag_to_subcommand() {
+        let out = rewrite_legacy_args(as_vec(&["rnon", "--analyze", "file.sm", "--plot"]))
+            .expect("legacy analyze rewrite should succeed");
+        assert_eq!(as_text(&out), ["rnon", "analyze", "file.sm", "--plot"]);
+    }
+
+    #[test]
+    fn keep_subcommand_argv_unchanged() {
+        let out = rewrite_legacy_args(as_vec(&["rnon", "analyze", "file.sm", "--plot"]))
+            .expect("subcommand argv should parse");
+        assert_eq!(as_text(&out), ["rnon", "analyze", "file.sm", "--plot"]);
+    }
+
+    #[test]
+    fn error_when_legacy_flag_lacks_path() {
+        let err = rewrite_legacy_args(as_vec(&["rnon", "--analyze"]))
+            .expect_err("missing path should error");
+        assert!(err.contains("requires a path"));
+    }
 }
