@@ -1,5 +1,6 @@
-use rustfft::FftPlanner;
 use rustfft::num_complex::Complex;
+use rustfft::{Fft, FftPlanner};
+use std::sync::Arc;
 
 use crate::model::{BiasKernel, KernelTarget};
 
@@ -197,14 +198,39 @@ fn beat_time_to_window_taps(beat_time: f64, setup: Setup) -> Option<(usize, usiz
     }
 }
 
+struct SpectrogramCtx {
+    fft: Arc<dyn Fft<f64>>,
+    window: Vec<f64>,
+    buf: Vec<Complex<f64>>,
+    out: Vec<f64>,
+}
+
+impl SpectrogramCtx {
+    fn new(nperseg: usize, rows: usize, cols: usize) -> Self {
+        let mut planner = FftPlanner::<f64>::new();
+        let fft = planner.plan_fft_forward(nperseg);
+        Self {
+            fft,
+            window: hann_periodic(nperseg),
+            buf: vec![Complex::new(0.0, 0.0); nperseg],
+            out: vec![0.0; rows * cols],
+        }
+    }
+}
+
 fn build_fingerprints(
     audio_mono: &[f32],
     sample_rate_hz: u32,
     setup: Setup,
     windows: &[(usize, usize)],
 ) -> Result<(Vec<f64>, Vec<f64>, usize), String> {
-    let mut acc = vec![0.0; setup.n_freq_taps * setup.fp_size];
-    let mut digest = Vec::new();
+    let rows = setup.n_freq_taps;
+    let cols = setup.fp_size;
+    let mut acc = vec![0.0; rows * cols];
+    let mut digest = Vec::with_capacity(windows.len() * cols);
+    let weights = frequency_weights(sample_rate_hz, setup.nperseg, rows);
+    let mut sp = SpectrogramCtx::new(setup.nperseg, rows, cols);
+    let mut digest_row = vec![0.0; cols];
     let mut beats = 0usize;
     for (t_s, t_f) in windows {
         let sample_s = t_s.saturating_mul(setup.nstep);
@@ -213,26 +239,18 @@ fn build_fingerprints(
         if sample_f <= sample_s + setup.nperseg {
             continue;
         }
-        let Some((freqs, log_spec, cols)) = spectrogram_log(
+        if !spectrogram_log_into(
             &audio_mono[sample_s..sample_f],
-            sample_rate_hz,
             setup.nperseg,
             setup.nstep,
-        ) else {
-            continue;
-        };
-        if cols != setup.fp_size {
+            rows,
+            cols,
+            &mut sp,
+        ) {
             continue;
         }
-        let mut digest_row = vec![0.0; setup.fp_size];
-        apply_frequency_weighting(
-            &log_spec,
-            &freqs,
-            setup.n_freq_taps,
-            cols,
-            &mut acc,
-            &mut digest_row,
-        );
+        digest_row.fill(0.0);
+        apply_frequency_weighting(&sp.out, &weights, rows, cols, &mut acc, &mut digest_row);
         digest.extend_from_slice(&digest_row);
         beats += 1;
     }
@@ -243,51 +261,49 @@ fn build_fingerprints(
     }
 }
 
-fn spectrogram_log(
+fn spectrogram_log_into(
     samples: &[f32],
-    sample_rate_hz: u32,
     nperseg: usize,
     nstep: usize,
-) -> Option<(Vec<f64>, Vec<f64>, usize)> {
+    rows: usize,
+    expected_cols: usize,
+    sp: &mut SpectrogramCtx,
+) -> bool {
     if samples.len() < nperseg {
-        return None;
+        return false;
     }
     let cols = 1 + (samples.len() - nperseg) / nstep;
-    let rows = 1 + nperseg / 2;
-    let mut planner = FftPlanner::<f64>::new();
-    let fft = planner.plan_fft_forward(nperseg);
-    let window = hann_periodic(nperseg);
-    let mut buf = vec![Complex::new(0.0, 0.0); nperseg];
-    let mut out = vec![0.0; rows * cols];
+    if cols != expected_cols {
+        return false;
+    }
+    if sp.out.len() != rows * cols {
+        sp.out.resize(rows * cols, 0.0);
+    }
     for c in 0..cols {
         let base = c * nstep;
         for i in 0..nperseg {
-            buf[i].re = f64::from(samples[base + i]) * window[i];
-            buf[i].im = 0.0;
+            sp.buf[i].re = f64::from(samples[base + i]) * sp.window[i];
+            sp.buf[i].im = 0.0;
         }
-        fft.process(&mut buf);
+        sp.fft.process(&mut sp.buf);
         for r in 0..rows {
-            let v = buf[r];
-            out[r * cols + c] = (v.re.mul_add(v.re, v.im * v.im) + EPS).log2();
+            let v = sp.buf[r];
+            sp.out[r * cols + c] = (v.re.mul_add(v.re, v.im * v.im) + EPS).log2();
         }
     }
-    let mut freqs = vec![0.0; rows];
-    for (r, f) in freqs.iter_mut().enumerate() {
-        *f = r as f64 * f64::from(sample_rate_hz) / nperseg as f64;
-    }
-    Some((freqs, out, cols))
+    true
 }
 
 fn apply_frequency_weighting(
     log_spec: &[f64],
-    freqs: &[f64],
+    weights: &[f64],
     rows: usize,
     cols: usize,
     acc: &mut [f64],
     digest_row: &mut [f64],
 ) {
     for r in 0..rows {
-        let w = freqs[r] * (-freqs[r] / FREQ_EMPHASIS).exp();
+        let w = weights[r];
         let row_off = r * cols;
         for c in 0..cols {
             let v = log_spec[row_off + c] * w;
@@ -295,6 +311,16 @@ fn apply_frequency_weighting(
             digest_row[c] += v;
         }
     }
+}
+
+fn frequency_weights(sample_rate_hz: u32, nperseg: usize, rows: usize) -> Vec<f64> {
+    let step = f64::from(sample_rate_hz) / nperseg as f64;
+    (0..rows)
+        .map(|r| {
+            let f = r as f64 * step;
+            f * (-f / FREQ_EMPHASIS).exp()
+        })
+        .collect()
 }
 
 fn hann_periodic(n: usize) -> Vec<f64> {
