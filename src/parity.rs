@@ -254,12 +254,9 @@ fn compare_row(
         if !row_has_bias_fields(row) {
             return Ok(());
         }
-        let est = estimate_bias_with_beat_fn(
-            &decode.mono,
-            decode.sample_rate_hz,
-            cfg,
-            |beat| global_timing.time_at_stop(beat as f64),
-        )
+        let est = estimate_bias_with_beat_fn(&decode.mono, decode.sample_rate_hz, cfg, |beat| {
+            global_timing.time_at_stop(beat as f64)
+        })
         .map_err(|e| format!("{} bias estimation failed: {e}", chart_label(row)))?;
         compare_base_row_fields(row, baseline, &est, state);
         return Ok(());

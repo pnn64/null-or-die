@@ -98,13 +98,7 @@ fn estimate_bias_with_setup<F>(
 where
     F: FnMut(usize) -> f64,
 {
-    let windows = beat_windows_from_fn(
-        audio_mono.len(),
-        sample_rate_hz,
-        cfg,
-        setup,
-        beat_time_fn,
-    );
+    let windows = beat_windows_from_fn(audio_mono.len(), sample_rate_hz, cfg, setup, beat_time_fn);
     if windows.is_empty() {
         return Err("no beat windows produced for bias calculation".to_string());
     }

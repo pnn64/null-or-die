@@ -15,6 +15,7 @@ pub enum Command {
     Analyze(AnalyzeCmd),
     Parity(ParityCmd),
     Harness(HarnessCmd),
+    Bench(BenchCmd),
     Plot(PlotCmd),
 }
 
@@ -154,4 +155,39 @@ pub struct PlotCmd {
 
     #[arg(long, default_value_t = 50.0)]
     pub span_ms: f64,
+}
+
+#[derive(Debug, Parser)]
+pub struct BenchCmd {
+    pub simfile_path: PathBuf,
+
+    #[arg(short = 'n', long = "iterations", default_value_t = 20)]
+    pub iterations: usize,
+
+    #[arg(long = "warmup", default_value_t = 3)]
+    pub warmup: usize,
+
+    #[arg(short = 'o', long)]
+    pub output: Option<PathBuf>,
+
+    #[arg(short = 'f', long = "fingerprint", default_value_t = 50.0)]
+    pub fingerprint_ms: f64,
+
+    #[arg(short = 'w', long = "window", default_value_t = 10.0)]
+    pub window_ms: f64,
+
+    #[arg(short = 's', long = "step", default_value_t = 0.2)]
+    pub step_ms: f64,
+
+    #[arg(long = "magic-offset", default_value_t = 0.0)]
+    pub magic_offset_ms: f64,
+
+    #[arg(long = "kernel-target", default_value = "digest")]
+    pub kernel_target: String,
+
+    #[arg(long = "kernel-type", default_value = "rising")]
+    pub kernel_type: String,
+
+    #[arg(long = "full-spectrogram")]
+    pub full_spectrogram: bool,
 }

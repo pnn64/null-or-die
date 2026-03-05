@@ -1,5 +1,6 @@
 mod analyze;
 mod audio;
+mod bench;
 mod bias;
 mod cli;
 mod compat;
@@ -41,6 +42,10 @@ pub fn run() -> Result<(), String> {
         }
         cli::Command::Harness(args) => {
             let report = harness::run(&args)?;
+            write_json(&report, args.output.as_deref())
+        }
+        cli::Command::Bench(args) => {
+            let report = bench::run(&args)?;
             write_json(&report, args.output.as_deref())
         }
         cli::Command::Plot(args) => {

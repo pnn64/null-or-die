@@ -7,6 +7,7 @@ Terminal-first Rust reimplementation scaffold for `nine-or-null` parity work.
 - `rnon analyze <path>`: scans simfiles, parses chart metadata through `rssp`, decodes OGG audio, and computes native bias metrics per chart.
 - `rnon parity <path> --baseline <dir>`: validates MD5-sharded fixtures and checks native bias outputs against baseline chart rows (including split `#MUSIC` rows).
 - `rnon harness <path> --baseline <dir>`: runs Python `nine-or-null` reference analysis and writes canonical `json.zst` fixtures.
+- `rnon bench <simfile>`: runs repeated analyze-style passes on one simfile and reports phase timings (read, parse, decode, bias, total).
 - `rnon plot <input.json> <out.png>`: draws bias markers from JSON (`bias_ms`, `bias_result`, or `bias`).
 
 `analyze` and `parity` now share the native bias math path.
@@ -29,5 +30,6 @@ Baseline chart rows include a `music` field (chart `#MUSIC` if present, else sim
 cargo run -- analyze /path/to/Songs --output /tmp/rnon-scan.json
 cargo run -- parity /path/to/Songs --baseline /path/to/baseline --fail-on-missing --fail-on-mismatch
 cargo run -- harness /path/to/Songs --baseline /path/to/baseline --source-root /path/to/nine-or-null-0.8.0/nine-or-null
+cargo run --release -- bench "/path/to/PEMDMonium.sm" --warmup 3 --iterations 20
 cargo run -- plot /tmp/rnon-scan.json /tmp/bias.png --span-ms 20
 ```
