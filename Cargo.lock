@@ -277,7 +277,7 @@ dependencies = [
 
 [[package]]
 name = "nod"
-version = "0.0.21"
+version = "0.0.22"
 dependencies = [
  "clap",
  "lewton",
@@ -388,6 +388,7 @@ checksum = "69cdb34c158ceb288df11e18b4bd39de994f6657d83847bdffdbd7f346754b0f"
 [[package]]
 name = "rssp"
 version = "0.3.55"
+source = "git+https://github.com/pnn64/rssp?rev=43b3046#43b30461b4ff0b5065b1d0e7b4564d0c21bb417b"
 dependencies = [
  "png",
  "serde_json",
