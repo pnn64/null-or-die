@@ -1,4 +1,4 @@
-# nod
+# null-or-die
 
 Terminal-first Rust reimplementation scaffold for `nine-or-null` parity work.
 
