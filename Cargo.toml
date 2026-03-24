@@ -1,5 +1,5 @@
 [package]
-name = "nod"
+name = "null-or-die"
 version = "0.0.22"
 edition = "2024"
 
