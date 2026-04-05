@@ -3,6 +3,10 @@ name = "null-or-die"
 version = "0.0.22"
 edition = "2024"
 
+[lib]
+name = "nod"
+path = "src/lib.rs"
+
 [dependencies]
 clap = { version = "4.5.32", features = ["derive"] }
 lewton = "0.10.2"
