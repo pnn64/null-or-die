@@ -4,7 +4,7 @@ use std::{env, ffi::OsString};
 use clap::{ArgAction, Parser, Subcommand};
 
 #[derive(Debug, Parser)]
-#[command(name = "nod")]
+#[command(name = "null-or-die")]
 #[command(about = "Rust reverse-engineering helper for nine-or-null parity", long_about = None)]
 pub struct Cli {
     #[command(subcommand)]
@@ -279,21 +279,27 @@ mod tests {
 
     #[test]
     fn rewrite_analyze_flag_to_subcommand() {
-        let out = rewrite_legacy_args(as_vec(&["nod", "--analyze", "file.sm", "--plot"]))
+        let out = rewrite_legacy_args(as_vec(&["null-or-die", "--analyze", "file.sm", "--plot"]))
             .expect("legacy analyze rewrite should succeed");
-        assert_eq!(as_text(&out), ["nod", "analyze", "file.sm", "--plot"]);
+        assert_eq!(
+            as_text(&out),
+            ["null-or-die", "analyze", "file.sm", "--plot"]
+        );
     }
 
     #[test]
     fn keep_subcommand_argv_unchanged() {
-        let out = rewrite_legacy_args(as_vec(&["nod", "analyze", "file.sm", "--plot"]))
+        let out = rewrite_legacy_args(as_vec(&["null-or-die", "analyze", "file.sm", "--plot"]))
             .expect("subcommand argv should parse");
-        assert_eq!(as_text(&out), ["nod", "analyze", "file.sm", "--plot"]);
+        assert_eq!(
+            as_text(&out),
+            ["null-or-die", "analyze", "file.sm", "--plot"]
+        );
     }
 
     #[test]
     fn error_when_legacy_flag_lacks_path() {
-        let err = rewrite_legacy_args(as_vec(&["nod", "--analyze"]))
+        let err = rewrite_legacy_args(as_vec(&["null-or-die", "--analyze"]))
             .expect_err("missing path should error");
         assert!(err.contains("requires a path"));
     }

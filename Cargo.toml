@@ -1,10 +1,7 @@
 [package]
 name = "null-or-die"
-version = "0.0.22"
+version = "0.0.23"
 edition = "2024"
-
-[lib]
-name = "nod"
 
 [dependencies]
 clap = { version = "4.5.32", features = ["derive"] }

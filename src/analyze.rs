@@ -42,7 +42,7 @@ pub fn run(args: &AnalyzeCmd) -> Result<AnalyzeReport, String> {
         })
         .collect::<Vec<_>>();
     Ok(AnalyzeReport {
-        tool: "nod".to_string(),
+        tool: crate::TOOL_NAME.to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
         mode: "scan".to_string(),
         params,
@@ -676,7 +676,9 @@ fn dump_trace(
         .and_then(|s| s.to_str())
         .unwrap_or("simfile");
     let safe_sim = sanitize_file_stem(sim_stem);
-    let out_path = dump_dir.join(format!("nod-trace-{safe_sim}-chart{chart_index}.json"));
+    let out_path = dump_dir.join(format!(
+        "null-or-die-trace-{safe_sim}-chart{chart_index}.json"
+    ));
     let payload = AnalyzeTraceDump {
         simfile_path: simfile_path.display().to_string(),
         chart_index,

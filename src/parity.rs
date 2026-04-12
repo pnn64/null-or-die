@@ -1148,7 +1148,7 @@ fn build_report(root: &Path, baseline: &Path, cases: Vec<ParityCase>) -> ParityR
     let invalid = count_status(&cases, "invalid_baseline");
     let read_errors = count_status(&cases, "read_error");
     ParityReport {
-        tool: "nod".to_string(),
+        tool: crate::TOOL_NAME.to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
         mode: "parity".to_string(),
         root_path: root.display().to_string(),
@@ -1192,7 +1192,7 @@ fn dump_trace(
         .map_or_else(|| "base".to_string(), |i| format!("chart{i}"));
     let safe_sim = sanitize_file_stem(sim_stem);
     let safe_row = sanitize_file_stem(&chart_id);
-    let out_path = dump_dir.join(format!("nod-trace-{safe_sim}-{safe_row}.json"));
+    let out_path = dump_dir.join(format!("null-or-die-trace-{safe_sim}-{safe_row}.json"));
     let payload = ParityTraceDump {
         simfile_path: simfile_path.display().to_string(),
         chart_index: row.chart_index,
@@ -1207,7 +1207,7 @@ fn dump_trace(
             conv_quint: row.conv_quint,
             conv_stdev: row.conv_stdev,
         },
-        nod: TraceMetric {
+        null_or_die: TraceMetric {
             bias_ms: Some(est.bias_ms),
             confidence: Some(est.confidence),
             conv_quint: Some(est.conv_quint),
@@ -1253,7 +1253,7 @@ struct ParityTraceDump {
     description: Option<String>,
     params: BaselineParams,
     baseline: TraceMetric,
-    nod: TraceMetric,
+    null_or_die: TraceMetric,
     trace: BiasTrace,
 }
 
@@ -1685,7 +1685,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("time")
             .as_millis();
-        let path = env::temp_dir().join(format!("nod-{tag}-{ts}-{}", std::process::id()));
+        let path = env::temp_dir().join(format!("null-or-die-{tag}-{ts}-{}", std::process::id()));
         fs::create_dir_all(&path).expect("mkdir temp root");
         path
     }

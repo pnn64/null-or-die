@@ -31,7 +31,7 @@ pub fn run(args: &PlotCmd) -> Result<PlotReport, String> {
         &biases,
     )?;
     Ok(PlotReport {
-        tool: "nod".to_string(),
+        tool: crate::TOOL_NAME.to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
         input_json: args.input_json.display().to_string(),
         output_png: args.output_png.display().to_string(),

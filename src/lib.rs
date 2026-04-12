@@ -17,6 +17,8 @@ use std::path::Path;
 
 use serde::Serialize;
 
+pub const TOOL_NAME: &str = env!("CARGO_PKG_NAME");
+
 pub fn run() -> Result<(), String> {
     let cli = cli::Cli::parse_with_compat()?;
     match cli.command {

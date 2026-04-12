@@ -21,7 +21,7 @@ def parse_bool(raw):
     return str(raw).strip().lower() in ("1", "true", "yes", "on")
 
 def parse_args():
-    ap = argparse.ArgumentParser(description="nod python reference runner")
+    ap = argparse.ArgumentParser(description="null-or-die python reference runner")
     ap.add_argument("--simfile-path", required=True)
     ap.add_argument("--report-dir", required=True)
     ap.add_argument("--source-root")
@@ -329,11 +329,12 @@ fn resolve_scratch_path(args: &HarnessCmd) -> PathBuf {
     let stamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
-    args.baseline_path.join(format!("__nod-harness-{stamp}"))
+    args.baseline_path
+        .join(format!("__null-or-die-harness-{stamp}"))
 }
 
 fn write_python_script(scratch_path: &Path) -> Result<PathBuf, String> {
-    let script_path = scratch_path.join("nod_python_ref.py");
+    let script_path = scratch_path.join("null_or_die_python_ref.py");
     fs::write(&script_path, PY_REF_SCRIPT)
         .map_err(|e| format!("write script {} failed: {e}", script_path.display()))?;
     Ok(script_path)
@@ -430,7 +431,7 @@ fn build_report(
     let skipped_existing = count_cases(&cases, "skipped_existing");
     let failed = count_cases(&cases, "error");
     HarnessReport {
-        tool: "nod".to_string(),
+        tool: crate::TOOL_NAME.to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
         mode: "python-reference-harness".to_string(),
         root_path: args.root_path.display().to_string(),

@@ -33,7 +33,7 @@ pub fn run(args: &BenchCmd) -> Result<BenchReport, String> {
         .ok_or_else(|| "internal bench error: no runs recorded".to_string())?;
     let timings = summarize_runs(&runs);
     Ok(BenchReport {
-        tool: "nod".to_string(),
+        tool: crate::TOOL_NAME.to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
         mode: "bench-analyze".to_string(),
         simfile_path: args.simfile_path.display().to_string(),
