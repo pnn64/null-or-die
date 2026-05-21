@@ -367,170 +367,6 @@ impl BiasRuntime {
     }
 }
 
-#[allow(dead_code)]
-pub fn estimate_bias(
-    audio_mono: &[f32],
-    sample_rate_hz: u32,
-    chart: &rssp::ChartSummary,
-    cfg: &BiasCfg,
-) -> Result<BiasEstimate, String> {
-    let mut runtime = BiasRuntime::default();
-    estimate_bias_reuse(audio_mono, sample_rate_hz, chart, cfg, &mut runtime)
-}
-
-pub fn estimate_bias_reuse(
-    audio_mono: &[f32],
-    sample_rate_hz: u32,
-    chart: &rssp::ChartSummary,
-    cfg: &BiasCfg,
-    runtime: &mut BiasRuntime,
-) -> Result<BiasEstimate, String> {
-    let setup = build_setup(audio_mono.len(), sample_rate_hz, cfg)?;
-    let timing = rssp::timing::timing_data_from_segments(
-        chart.chart_offset_seconds,
-        0.0,
-        &chart.timing_segments,
-    );
-    estimate_bias_with_timing_setup(
-        audio_mono,
-        sample_rate_hz,
-        &timing,
-        cfg,
-        setup,
-        runtime,
-        None,
-        false,
-        None,
-    )
-    .map(BiasResult::into_estimate)
-}
-
-pub fn estimate_bias_reuse_with_plot(
-    audio_mono: &[f32],
-    sample_rate_hz: u32,
-    chart: &rssp::ChartSummary,
-    cfg: &BiasCfg,
-    runtime: &mut BiasRuntime,
-) -> Result<BiasEstimateWithPlot, String> {
-    let setup = build_setup(audio_mono.len(), sample_rate_hz, cfg)?;
-    let timing = rssp::timing::timing_data_from_segments(
-        chart.chart_offset_seconds,
-        0.0,
-        &chart.timing_segments,
-    );
-    estimate_bias_with_timing_setup(
-        audio_mono,
-        sample_rate_hz,
-        &timing,
-        cfg,
-        setup,
-        runtime,
-        None,
-        true,
-        None,
-    )
-    .and_then(BiasResult::into_plot)
-}
-
-pub fn estimate_bias_reuse_with_stream<F>(
-    audio_mono: &[f32],
-    sample_rate_hz: u32,
-    chart: &rssp::ChartSummary,
-    cfg: &BiasCfg,
-    runtime: &mut BiasRuntime,
-    stream_cfg: BiasStreamCfg,
-    mut on_event: F,
-) -> Result<BiasEstimateWithPlot, String>
-where
-    F: FnMut(BiasStreamEvent),
-{
-    let setup = build_setup(audio_mono.len(), sample_rate_hz, cfg)?;
-    let timing = rssp::timing::timing_data_from_segments(
-        chart.chart_offset_seconds,
-        0.0,
-        &chart.timing_segments,
-    );
-    let mut sink = StreamSink {
-        cfg: stream_cfg,
-        emit: &mut on_event,
-    };
-    estimate_bias_with_timing_setup(
-        audio_mono,
-        sample_rate_hz,
-        &timing,
-        cfg,
-        setup,
-        runtime,
-        None,
-        true,
-        Some(&mut sink),
-    )
-    .and_then(BiasResult::into_plot)
-}
-
-pub fn estimate_bias_reuse_with_trace(
-    audio_mono: &[f32],
-    sample_rate_hz: u32,
-    chart: &rssp::ChartSummary,
-    cfg: &BiasCfg,
-    runtime: &mut BiasRuntime,
-    trace_cfg: BiasTraceCfg,
-) -> Result<(BiasEstimate, BiasTrace), String> {
-    let setup = build_setup(audio_mono.len(), sample_rate_hz, cfg)?;
-    let timing = rssp::timing::timing_data_from_segments(
-        chart.chart_offset_seconds,
-        0.0,
-        &chart.timing_segments,
-    );
-    estimate_bias_with_timing_setup(
-        audio_mono,
-        sample_rate_hz,
-        &timing,
-        cfg,
-        setup,
-        runtime,
-        Some(trace_cfg),
-        false,
-        None,
-    )
-    .and_then(BiasResult::into_pair)
-}
-
-#[allow(dead_code)]
-pub fn estimate_bias_with_timing(
-    audio_mono: &[f32],
-    sample_rate_hz: u32,
-    timing: &rssp::timing::TimingData,
-    cfg: &BiasCfg,
-) -> Result<BiasEstimate, String> {
-    let mut runtime = BiasRuntime::default();
-    estimate_bias_with_timing_reuse(audio_mono, sample_rate_hz, timing, cfg, &mut runtime)
-}
-
-#[allow(dead_code)]
-pub fn estimate_bias_with_timing_reuse(
-    audio_mono: &[f32],
-    sample_rate_hz: u32,
-    timing: &rssp::timing::TimingData,
-    cfg: &BiasCfg,
-    runtime: &mut BiasRuntime,
-) -> Result<BiasEstimate, String> {
-    let setup = build_setup(audio_mono.len(), sample_rate_hz, cfg)?;
-    estimate_bias_with_timing_setup(
-        audio_mono,
-        sample_rate_hz,
-        timing,
-        cfg,
-        setup,
-        runtime,
-        None,
-        false,
-        None,
-    )
-    .map(BiasResult::into_estimate)
-}
-
-#[allow(dead_code)]
 pub fn estimate_bias_with_beat_fn<F>(
     audio_mono: &[f32],
     sample_rate_hz: u32,
@@ -569,6 +405,63 @@ where
     .map(BiasResult::into_estimate)
 }
 
+pub fn estimate_bias_with_beat_fn_plot_reuse<F>(
+    audio_mono: &[f32],
+    sample_rate_hz: u32,
+    cfg: &BiasCfg,
+    runtime: &mut BiasRuntime,
+    beat_time_fn: F,
+) -> Result<BiasEstimateWithPlot, String>
+where
+    F: FnMut(usize) -> f64,
+{
+    let setup = build_setup(audio_mono.len(), sample_rate_hz, cfg)?;
+    estimate_bias_with_setup(
+        audio_mono,
+        sample_rate_hz,
+        cfg,
+        setup,
+        runtime,
+        None,
+        true,
+        None,
+        beat_time_fn,
+    )
+    .and_then(BiasResult::into_plot)
+}
+
+pub fn estimate_bias_with_beat_fn_stream_reuse<F, G>(
+    audio_mono: &[f32],
+    sample_rate_hz: u32,
+    cfg: &BiasCfg,
+    runtime: &mut BiasRuntime,
+    stream_cfg: BiasStreamCfg,
+    mut on_event: G,
+    beat_time_fn: F,
+) -> Result<BiasEstimateWithPlot, String>
+where
+    F: FnMut(usize) -> f64,
+    G: FnMut(BiasStreamEvent),
+{
+    let setup = build_setup(audio_mono.len(), sample_rate_hz, cfg)?;
+    let mut sink = StreamSink {
+        cfg: stream_cfg,
+        emit: &mut on_event,
+    };
+    estimate_bias_with_setup(
+        audio_mono,
+        sample_rate_hz,
+        cfg,
+        setup,
+        runtime,
+        None,
+        true,
+        Some(&mut sink),
+        beat_time_fn,
+    )
+    .and_then(BiasResult::into_plot)
+}
+
 pub fn estimate_bias_with_beat_fn_trace_reuse<F>(
     audio_mono: &[f32],
     sample_rate_hz: u32,
@@ -593,30 +486,6 @@ where
         beat_time_fn,
     )
     .and_then(BiasResult::into_pair)
-}
-
-fn estimate_bias_with_timing_setup(
-    audio_mono: &[f32],
-    sample_rate_hz: u32,
-    timing: &rssp::timing::TimingData,
-    cfg: &BiasCfg,
-    setup: Setup,
-    runtime: &mut BiasRuntime,
-    trace_cfg: Option<BiasTraceCfg>,
-    want_plot: bool,
-    stream: Option<&mut StreamSink<'_>>,
-) -> Result<BiasResult, String> {
-    estimate_bias_with_setup(
-        audio_mono,
-        sample_rate_hz,
-        cfg,
-        setup,
-        runtime,
-        trace_cfg,
-        want_plot,
-        stream,
-        |beat| rssp::timing::get_time_for_beat(timing, beat as f64),
-    )
 }
 
 fn estimate_bias_with_setup<F>(
@@ -816,7 +685,14 @@ fn count_stream_beats(
         return windows
             .iter()
             .filter(|w| {
-                window_matches_legacy_rules(audio_len, setup, w.t_s, w.t_f, setup.fp_size, full_cols)
+                window_matches_legacy_rules(
+                    audio_len,
+                    setup,
+                    w.t_s,
+                    w.t_f,
+                    setup.fp_size,
+                    full_cols,
+                )
             })
             .count();
     }
@@ -824,8 +700,8 @@ fn count_stream_beats(
         .iter()
         .filter(|w| {
             let sample_s = w.t_s.saturating_mul(setup.nstep);
-            let sample_f =
-                (w.t_f.saturating_mul(setup.nstep) + setup.nperseg.saturating_sub(1)).min(audio_len);
+            let sample_f = (w.t_f.saturating_mul(setup.nstep) + setup.nperseg.saturating_sub(1))
+                .min(audio_len);
             sample_f > sample_s + setup.nperseg
         })
         .count()

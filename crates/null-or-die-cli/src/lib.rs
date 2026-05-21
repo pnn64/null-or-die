@@ -1,11 +1,6 @@
-pub mod api;
-
 mod analyze;
-mod audio;
 mod bench;
-mod bias;
 mod cli;
-mod compat;
 mod fs_scan;
 mod harness;
 mod model;
@@ -17,7 +12,22 @@ use std::path::Path;
 
 use serde::Serialize;
 
-pub const TOOL_NAME: &str = env!("CARGO_PKG_NAME");
+pub const TOOL_NAME: &str = "null-or-die";
+
+mod audio {
+    pub use null_or_die_audio::*;
+}
+
+mod bias {
+    pub use null_or_die_core::*;
+    pub use null_or_die_rssp::{
+        estimate_bias_reuse, estimate_bias_reuse_with_plot, estimate_bias_reuse_with_trace,
+    };
+}
+
+mod compat {
+    pub use null_or_die_core::{guess_paradigm, slot_abbreviation};
+}
 
 pub fn run() -> Result<(), String> {
     let cli = cli::Cli::parse_with_compat()?;
@@ -68,10 +78,3 @@ fn write_json<T: Serialize>(value: &T, out_path: Option<&Path>) -> Result<(), St
         Ok(())
     }
 }
-
-pub use bias::{
-    BiasCfg, BiasEstimate, BiasEstimateWithPlot, BiasPlotData, BiasRuntime, BiasStreamCfg,
-    BiasStreamEvent, GraphOrientation,
-};
-pub use compat::{guess_paradigm, slot_abbreviation, slot_expansion};
-pub use model::{BiasKernel, KernelTarget};

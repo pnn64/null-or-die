@@ -1,0 +1,17 @@
+[package]
+name = "null-or-die-cli"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+clap = { version = "4.5.32", features = ["derive"] }
+md5 = "0.8.0"
+null-or-die-audio = { path = "../null-or-die-audio" }
+null-or-die-core = { path = "../null-or-die-core" }
+null-or-die-rssp = { path = "../null-or-die-rssp" }
+png = "0.18.1"
+rssp = { git = "https://github.com/pnn64/rssp", branch = "main" }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.145"
+walkdir = "2.5.0"
+zstd = "0.13.3"

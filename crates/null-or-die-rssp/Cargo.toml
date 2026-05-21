@@ -1,0 +1,9 @@
+[package]
+name = "null-or-die-rssp"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+null-or-die-audio = { path = "../null-or-die-audio" }
+null-or-die-core = { path = "../null-or-die-core" }
+rssp = { git = "https://github.com/pnn64/rssp", branch = "main" }

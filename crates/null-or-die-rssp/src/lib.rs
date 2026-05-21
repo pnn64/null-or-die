@@ -3,12 +3,13 @@ use std::path::{Path, PathBuf};
 
 use rssp::{AnalysisOptions, analyze};
 
-use crate::audio::decode_ogg_mono_like_python;
-use crate::bias::{
-    BiasCfg, BiasEstimate, BiasEstimateWithPlot, BiasRuntime, BiasStreamCfg, BiasStreamEvent,
-    estimate_bias_reuse_with_plot, estimate_bias_reuse_with_stream,
+use null_or_die_audio::{OggDecode, decode_ogg_mono_like_python};
+use null_or_die_core::{
+    BiasCfg, BiasEstimate, BiasEstimateWithPlot, BiasKernel, BiasPlotData, BiasRuntime,
+    BiasStreamCfg, BiasStreamEvent, BiasTrace, BiasTraceCfg, KernelTarget,
+    estimate_bias_with_beat_fn_plot_reuse, estimate_bias_with_beat_fn_reuse,
+    estimate_bias_with_beat_fn_stream_reuse, estimate_bias_with_beat_fn_trace_reuse,
 };
-use crate::model::{BiasKernel, KernelTarget};
 
 #[derive(Debug, Clone)]
 pub struct SyncChartMeta {
@@ -28,7 +29,7 @@ pub struct SyncChartMeta {
 pub struct SyncChartResult {
     pub meta: SyncChartMeta,
     pub estimate: BiasEstimate,
-    pub plot: crate::bias::BiasPlotData,
+    pub plot: BiasPlotData,
 }
 
 pub fn default_bias_cfg() -> BiasCfg {
@@ -41,6 +42,105 @@ pub fn default_bias_cfg() -> BiasCfg {
         kernel_type: BiasKernel::Rising,
         _full_spectrogram: false,
     }
+}
+
+pub fn estimate_bias(
+    audio_mono: &[f32],
+    sample_rate_hz: u32,
+    chart: &rssp::ChartSummary,
+    cfg: &BiasCfg,
+) -> Result<BiasEstimate, String> {
+    let mut runtime = BiasRuntime::default();
+    estimate_bias_reuse(audio_mono, sample_rate_hz, chart, cfg, &mut runtime)
+}
+
+pub fn estimate_bias_reuse(
+    audio_mono: &[f32],
+    sample_rate_hz: u32,
+    chart: &rssp::ChartSummary,
+    cfg: &BiasCfg,
+    runtime: &mut BiasRuntime,
+) -> Result<BiasEstimate, String> {
+    let timing = timing_for_chart(chart);
+    estimate_bias_with_timing_reuse(audio_mono, sample_rate_hz, &timing, cfg, runtime)
+}
+
+pub fn estimate_bias_reuse_with_plot(
+    audio_mono: &[f32],
+    sample_rate_hz: u32,
+    chart: &rssp::ChartSummary,
+    cfg: &BiasCfg,
+    runtime: &mut BiasRuntime,
+) -> Result<BiasEstimateWithPlot, String> {
+    let timing = timing_for_chart(chart);
+    estimate_bias_with_beat_fn_plot_reuse(audio_mono, sample_rate_hz, cfg, runtime, |beat| {
+        rssp::timing::get_time_for_beat(&timing, beat as f64)
+    })
+}
+
+pub fn estimate_bias_reuse_with_stream<F>(
+    audio_mono: &[f32],
+    sample_rate_hz: u32,
+    chart: &rssp::ChartSummary,
+    cfg: &BiasCfg,
+    runtime: &mut BiasRuntime,
+    stream_cfg: BiasStreamCfg,
+    on_event: F,
+) -> Result<BiasEstimateWithPlot, String>
+where
+    F: FnMut(BiasStreamEvent),
+{
+    let timing = timing_for_chart(chart);
+    estimate_bias_with_beat_fn_stream_reuse(
+        audio_mono,
+        sample_rate_hz,
+        cfg,
+        runtime,
+        stream_cfg,
+        on_event,
+        |beat| rssp::timing::get_time_for_beat(&timing, beat as f64),
+    )
+}
+
+pub fn estimate_bias_reuse_with_trace(
+    audio_mono: &[f32],
+    sample_rate_hz: u32,
+    chart: &rssp::ChartSummary,
+    cfg: &BiasCfg,
+    runtime: &mut BiasRuntime,
+    trace_cfg: BiasTraceCfg,
+) -> Result<(BiasEstimate, BiasTrace), String> {
+    let timing = timing_for_chart(chart);
+    estimate_bias_with_beat_fn_trace_reuse(
+        audio_mono,
+        sample_rate_hz,
+        cfg,
+        runtime,
+        trace_cfg,
+        |beat| rssp::timing::get_time_for_beat(&timing, beat as f64),
+    )
+}
+
+pub fn estimate_bias_with_timing(
+    audio_mono: &[f32],
+    sample_rate_hz: u32,
+    timing: &rssp::timing::TimingData,
+    cfg: &BiasCfg,
+) -> Result<BiasEstimate, String> {
+    let mut runtime = BiasRuntime::default();
+    estimate_bias_with_timing_reuse(audio_mono, sample_rate_hz, timing, cfg, &mut runtime)
+}
+
+pub fn estimate_bias_with_timing_reuse(
+    audio_mono: &[f32],
+    sample_rate_hz: u32,
+    timing: &rssp::timing::TimingData,
+    cfg: &BiasCfg,
+    runtime: &mut BiasRuntime,
+) -> Result<BiasEstimate, String> {
+    estimate_bias_with_beat_fn_reuse(audio_mono, sample_rate_hz, cfg, runtime, |beat| {
+        rssp::timing::get_time_for_beat(timing, beat as f64)
+    })
 }
 
 pub fn inspect_simfile(simfile_path: &Path) -> Result<Vec<SyncChartMeta>, String> {
@@ -71,6 +171,10 @@ pub fn inspect_simfile(simfile_path: &Path) -> Result<Vec<SyncChartMeta>, String
         })
         .collect::<Vec<_>>();
     Ok(out)
+}
+
+fn timing_for_chart(chart: &rssp::ChartSummary) -> rssp::timing::TimingData {
+    rssp::timing::timing_data_from_segments(chart.chart_offset_seconds, 0.0, &chart.timing_segments)
 }
 
 pub fn analyze_chart(
@@ -188,7 +292,7 @@ fn read_summary(simfile_path: &Path) -> Result<rssp::SimfileSummary, String> {
 fn load_audio_for_summary(
     simfile_path: &Path,
     summary: &rssp::SimfileSummary,
-) -> Result<(String, PathBuf, crate::audio::OggDecode), String> {
+) -> Result<(String, PathBuf, OggDecode), String> {
     let song_dir = simfile_path.parent().ok_or_else(|| {
         format!(
             "simfile has no parent directory: {}",

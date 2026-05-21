@@ -1,16 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-pub enum KernelTarget {
-    Digest,
-    Accumulator,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-pub enum BiasKernel {
-    Rising,
-    Loudest,
-}
+pub use null_or_die_core::{BiasKernel, KernelTarget};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AnalyzeParams {

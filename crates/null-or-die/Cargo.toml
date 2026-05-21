@@ -1,0 +1,9 @@
+[package]
+name = "null-or-die"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+null-or-die-cli = { path = "../null-or-die-cli" }
+null-or-die-core = { path = "../null-or-die-core" }
+null-or-die-rssp = { path = "../null-or-die-rssp" }
