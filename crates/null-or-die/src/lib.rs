@@ -8,6 +8,6 @@ pub fn run() -> Result<(), String> {
 
 pub use null_or_die_core::{
     BiasCfg, BiasEstimate, BiasEstimateWithPlot, BiasKernel, BiasPlotData, BiasRuntime,
-    BiasStreamCfg, BiasStreamEvent, GraphOrientation, KernelTarget, guess_paradigm,
-    slot_abbreviation, slot_expansion,
+    BiasStreamCfg, BiasStreamEvent, GraphOrientation, KernelTarget,
+    estimate_bias_with_beat_fn_stream_reuse, guess_paradigm, slot_abbreviation, slot_expansion,
 };
