@@ -5,3 +5,4 @@ edition = "2024"
 
 [dependencies]
 lewton = "0.10.2"
+symphonia = { version = "0.5", default-features = false, features = ["ogg", "vorbis"] }
