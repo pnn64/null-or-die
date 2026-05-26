@@ -148,6 +148,12 @@ fn decode_ogg_symphonia(path: &Path) -> Result<OggDecode, String> {
     let mut decoder = symphonia::default::get_codecs()
         .make(&codec_params, &DecoderOptions::default())
         .map_err(|e| format!("ogg decoder init {} failed: {e}", path.display()))?;
+    // Lewton retains the encoder-delay samples at the start of the stream and
+    // trims only the end padding using the final granule position. With gapless
+    // disabled, symphonia delivers every decoded frame (delay + content + end
+    // padding), so we mirror lewton by trimming exactly `padding` frames off
+    // the tail of the assembled mono buffer.
+    let end_padding_frames = codec_params.padding.unwrap_or(0) as usize;
     let mut mono = Vec::new();
     loop {
         let packet = match format.next_packet() {
@@ -169,6 +175,9 @@ fn decode_ogg_symphonia(path: &Path) -> Result<OggDecode, String> {
             Err(e) => return Err(format!("ogg decode {} failed: {e}", path.display())),
         };
         append_symphonia_buffer_python_mono_like(&audio_buf, source_channels, &mut mono);
+    }
+    if end_padding_frames > 0 && end_padding_frames <= mono.len() {
+        mono.truncate(mono.len() - end_padding_frames);
     }
     Ok(OggDecode {
         sample_rate_hz,
