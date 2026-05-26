@@ -1,21 +1,18 @@
 use std::fs::File;
-use std::io::BufReader;
 use std::path::Path;
 use std::process::Command;
 
-use lewton::inside_ogg::OggStreamReader;
 use symphonia::core::audio::{AudioBufferRef, Signal};
 use symphonia::core::codecs::{DecoderOptions, CODEC_TYPE_NULL};
+use symphonia::core::conv::IntoSample;
 use symphonia::core::errors::Error as SymphoniaError;
 use symphonia::core::formats::FormatOptions;
 use symphonia::core::io::MediaSourceStream;
 use symphonia::core::meta::MetadataOptions;
 use symphonia::core::probe::Hint;
 use symphonia::core::sample::Sample;
-use symphonia::core::conv::IntoSample;
 
 const PCM_INV_SCALE: f32 = 1.0 / 32768.0;
-const OGG_BUF_CAP: usize = 256 * 1024;
 
 #[derive(Debug, Clone)]
 pub struct OggDecode {
@@ -24,27 +21,32 @@ pub struct OggDecode {
 }
 
 pub fn decode_ogg_mono_like_python(path: &Path) -> Result<OggDecode, String> {
-    let (sample_rate_hz, source_channels) = probe_ogg_header(path)?;
     match decoder_pref().as_deref() {
-        Some("symphonia") => return decode_ogg_symphonia(path),
-        Some("lewton") => return decode_ogg_lewton(path),
         Some("ffmpeg") => {
+            let (sample_rate_hz, source_channels) = probe_ogg_header(path)?;
             return decode_ogg_ffmpeg(path, sample_rate_hz, source_channels);
         }
-        Some("auto") | None => {}
+        Some("symphonia") | Some("auto") | None => {}
         _ => {}
     }
     match decode_ogg_symphonia(path) {
         Ok(decoded) => Ok(decoded),
-        Err(symphonia_err) => match decode_ogg_ffmpeg(path, sample_rate_hz, source_channels) {
-            Ok(decoded) => Ok(decoded),
-            Err(ffmpeg_err) => match decode_ogg_lewton(path) {
+        Err(symphonia_err) => {
+            let (sample_rate_hz, source_channels) = match probe_ogg_header(path) {
+                Ok(v) => v,
+                Err(probe_err) => {
+                    return Err(format!(
+                        "symphonia decode failed: {symphonia_err}; ffmpeg fallback could not probe header: {probe_err}"
+                    ));
+                }
+            };
+            match decode_ogg_ffmpeg(path, sample_rate_hz, source_channels) {
                 Ok(decoded) => Ok(decoded),
-                Err(lewton_err) => Err(format!(
-                    "symphonia decode failed: {symphonia_err}; fallback ffmpeg decode failed: {ffmpeg_err}; fallback lewton decode failed: {lewton_err}"
+                Err(ffmpeg_err) => Err(format!(
+                    "symphonia decode failed: {symphonia_err}; fallback ffmpeg decode failed: {ffmpeg_err}"
                 )),
-            },
-        },
+            }
+        }
     }
 }
 
@@ -57,12 +59,33 @@ fn decoder_pref() -> Option<String> {
 
 fn probe_ogg_header(path: &Path) -> Result<(u32, usize), String> {
     let file = File::open(path).map_err(|e| format!("open {} failed: {e}", path.display()))?;
-    let reader = OggStreamReader::new(BufReader::with_capacity(OGG_BUF_CAP, file))
+    let mss = MediaSourceStream::new(Box::new(file), Default::default());
+    let mut hint = Hint::new();
+    hint.with_extension("ogg");
+    let probed = symphonia::default::get_probe()
+        .format(
+            &hint,
+            mss,
+            &FormatOptions::default(),
+            &MetadataOptions::default(),
+        )
         .map_err(|e| format!("ogg header parse {} failed: {e}", path.display()))?;
-    Ok((
-        reader.ident_hdr.audio_sample_rate,
-        usize::from(reader.ident_hdr.audio_channels),
-    ))
+    let track = probed
+        .format
+        .tracks()
+        .iter()
+        .find(|t| t.codec_params.codec != CODEC_TYPE_NULL)
+        .ok_or_else(|| format!("ogg {} has no usable audio track", path.display()))?;
+    let sample_rate_hz = track
+        .codec_params
+        .sample_rate
+        .ok_or_else(|| format!("ogg {} missing sample rate", path.display()))?;
+    let source_channels = track
+        .codec_params
+        .channels
+        .map(|c| c.count())
+        .ok_or_else(|| format!("ogg {} missing channel layout", path.display()))?;
+    Ok((sample_rate_hz, source_channels))
 }
 
 fn decode_ogg_ffmpeg(
@@ -95,25 +118,6 @@ fn decode_ogg_ffmpeg(
     Ok(OggDecode {
         sample_rate_hz,
         mono: mono_from_interleaved_pcm_i16(&output.stdout, source_channels),
-    })
-}
-
-fn decode_ogg_lewton(path: &Path) -> Result<OggDecode, String> {
-    let file = File::open(path).map_err(|e| format!("open {} failed: {e}", path.display()))?;
-    let mut reader = OggStreamReader::new(BufReader::with_capacity(OGG_BUF_CAP, file))
-        .map_err(|e| format!("ogg header parse {} failed: {e}", path.display()))?;
-    let sample_rate_hz = reader.ident_hdr.audio_sample_rate;
-    let source_channels = usize::from(reader.ident_hdr.audio_channels);
-    let mut mono = Vec::new();
-    while let Some(packet) = reader
-        .read_dec_packet()
-        .map_err(|e| format!("ogg decode {} failed: {e}", path.display()))?
-    {
-        append_python_mono_like(&packet, source_channels, &mut mono);
-    }
-    Ok(OggDecode {
-        sample_rate_hz,
-        mono,
     })
 }
 
@@ -304,11 +308,7 @@ fn append_interleaved_passthrough(packet: &[Vec<i16>], out: &mut Vec<f32>) {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        OggDecode, append_python_mono_like, decode_ogg_lewton, decode_ogg_symphonia,
-        mono_from_interleaved_pcm_i16,
-    };
-    use std::path::PathBuf;
+    use super::{append_python_mono_like, mono_from_interleaved_pcm_i16};
 
     #[test]
     fn stereo_collapse_uses_channel_max() {
@@ -349,97 +349,5 @@ mod tests {
         assert_eq!(out.len(), 2);
         assert!((out[0] - (200.0 / 32768.0)).abs() < 1e-7);
         assert!((out[1] - (-128.0 / 32768.0)).abs() < 1e-7);
-    }
-
-    /// Cross-decoder bit-exact parity sweep. Off by default because it requires a
-    /// local OGG corpus. Point `NOD_AUDIO_PARITY_OGG_DIR` at a directory of .ogg
-    /// files and run with `cargo test -p null-or-die-audio -- --ignored`.
-    #[test]
-    #[ignore = "requires NOD_AUDIO_PARITY_OGG_DIR pointing at a local .ogg corpus"]
-    fn symphonia_matches_lewton_on_local_ogg_corpus() {
-        let dir = match std::env::var("NOD_AUDIO_PARITY_OGG_DIR") {
-            Ok(v) if !v.trim().is_empty() => PathBuf::from(v),
-            _ => {
-                eprintln!("NOD_AUDIO_PARITY_OGG_DIR not set; skipping");
-                return;
-            }
-        };
-        let mut checked = 0usize;
-        let mut mismatches: Vec<String> = Vec::new();
-        for entry in walk_ogg(&dir) {
-            let lewton = match decode_ogg_lewton(&entry) {
-                Ok(d) => d,
-                Err(e) => {
-                    eprintln!("skip {} (lewton): {e}", entry.display());
-                    continue;
-                }
-            };
-            let symphonia = match decode_ogg_symphonia(&entry) {
-                Ok(d) => d,
-                Err(e) => {
-                    mismatches.push(format!("{}: symphonia decode failed: {e}", entry.display()));
-                    continue;
-                }
-            };
-            if let Some(diff) = diff_decodes(&lewton, &symphonia) {
-                mismatches.push(format!("{}: {diff}", entry.display()));
-            }
-            checked += 1;
-        }
-        assert!(
-            mismatches.is_empty(),
-            "checked {checked} ogg file(s); {} mismatch(es):\n{}",
-            mismatches.len(),
-            mismatches.join("\n")
-        );
-        assert!(checked > 0, "no .ogg files found under {}", dir.display());
-    }
-
-    fn walk_ogg(root: &std::path::Path) -> Vec<PathBuf> {
-        let mut out = Vec::new();
-        let mut stack = vec![root.to_path_buf()];
-        while let Some(dir) = stack.pop() {
-            let Ok(rd) = std::fs::read_dir(&dir) else {
-                continue;
-            };
-            for entry in rd.flatten() {
-                let path = entry.path();
-                if path.is_dir() {
-                    stack.push(path);
-                } else if path
-                    .extension()
-                    .and_then(|s| s.to_str())
-                    .is_some_and(|e| e.eq_ignore_ascii_case("ogg"))
-                {
-                    out.push(path);
-                }
-            }
-        }
-        out.sort();
-        out
-    }
-
-    fn diff_decodes(a: &OggDecode, b: &OggDecode) -> Option<String> {
-        if a.sample_rate_hz != b.sample_rate_hz {
-            return Some(format!(
-                "sample_rate_hz: lewton={} symphonia={}",
-                a.sample_rate_hz, b.sample_rate_hz
-            ));
-        }
-        if a.mono.len() != b.mono.len() {
-            return Some(format!(
-                "mono length: lewton={} symphonia={}",
-                a.mono.len(),
-                b.mono.len()
-            ));
-        }
-        for (i, (x, y)) in a.mono.iter().zip(b.mono.iter()).enumerate() {
-            if x.to_bits() != y.to_bits() {
-                return Some(format!(
-                    "mono[{i}] differs: lewton={x} symphonia={y}"
-                ));
-            }
-        }
-        None
     }
 }
