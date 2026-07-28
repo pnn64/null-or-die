@@ -347,23 +347,23 @@ fn decode_song_audio(audio_path: &Path) -> Result<OggDecode, String> {
     decode_ogg_mono_like_python(audio_path)
 }
 
-fn decode_song_audio_cached(
+fn decode_song_audio_cached<'a>(
     simfile_path: &Path,
     music_tag: &str,
-    cache: &mut Vec<AudioCacheEntry>,
-) -> Result<OggDecode, String> {
+    cache: &'a mut Vec<AudioCacheEntry>,
+) -> Result<&'a OggDecode, String> {
     let path = resolve_song_audio_path(simfile_path, music_tag)?;
-    for entry in cache.iter() {
-        if entry.path == path {
-            return entry.decode.clone();
-        }
+    let index = if let Some(index) = cache.iter().position(|entry| entry.path == path) {
+        index
+    } else {
+        let decode = decode_song_audio(&path);
+        cache.push(AudioCacheEntry { path, decode });
+        cache.len() - 1
+    };
+    match &cache[index].decode {
+        Ok(decode) => Ok(decode),
+        Err(err) => Err(err.clone()),
     }
-    let decode = decode_song_audio(&path);
-    cache.push(AudioCacheEntry {
-        path,
-        decode: decode.clone(),
-    });
-    decode
 }
 
 fn apply_bias_estimates(
@@ -379,7 +379,7 @@ fn apply_bias_estimates(
     bias_cfg: &BiasCfg,
     trace_ctl: &TraceCtl,
 ) {
-    let mut cache = Vec::new();
+    let mut cache = Vec::with_capacity(chart_music.len());
     let mut bias_rt = BiasRuntime::default();
     for (i, chart) in summary_charts.iter().enumerate() {
         let scan = &mut chart_scans[i];
@@ -423,7 +423,7 @@ fn apply_bias_estimates(
                                     i,
                                     music_tag,
                                     params,
-                                    &audio,
+                                    audio,
                                     bias_cfg,
                                     trace_ctl,
                                     &mut bias_rt,

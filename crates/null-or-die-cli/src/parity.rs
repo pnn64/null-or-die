@@ -275,7 +275,7 @@ fn compare_baseline_inner(
             simfile_path.display()
         )
     })?;
-    let mut cache = Vec::new();
+    let mut cache = Vec::with_capacity(baseline.charts.len());
     let mut bias_rt = BiasRuntime::default();
     for row in &baseline.charts {
         compare_row(
@@ -758,30 +758,36 @@ fn chart_label(row: &BaselineChart) -> String {
         .map_or_else(|| "chart[base]".to_string(), |i| format!("chart[{i}]"))
 }
 
-fn decode_cached(path: &Path, cache: &mut Vec<AudioCacheEntry>) -> Result<OggDecode, String> {
+fn decode_cached<'a>(
+    path: &Path,
+    cache: &'a mut Vec<AudioCacheEntry>,
+) -> Result<&'a OggDecode, String> {
     let mut decode = |p: &Path| decode_ogg_mono_like_python(p);
     decode_cached_with(path, cache, &mut decode)
 }
 
-fn decode_cached_with<F>(
+fn decode_cached_with<'a, F>(
     path: &Path,
-    cache: &mut Vec<AudioCacheEntry>,
+    cache: &'a mut Vec<AudioCacheEntry>,
     decode_fn: &mut F,
-) -> Result<OggDecode, String>
+) -> Result<&'a OggDecode, String>
 where
     F: FnMut(&Path) -> Result<OggDecode, String>,
 {
-    for entry in cache.iter() {
-        if entry.path == path {
-            return entry.decode.clone();
-        }
+    let index = if let Some(index) = cache.iter().position(|entry| entry.path == path) {
+        index
+    } else {
+        let decode = decode_fn(path);
+        cache.push(AudioCacheEntry {
+            path: path.to_path_buf(),
+            decode,
+        });
+        cache.len() - 1
+    };
+    match &cache[index].decode {
+        Ok(decode) => Ok(decode),
+        Err(err) => Err(err.clone()),
     }
-    let decode = decode_fn(path);
-    cache.push(AudioCacheEntry {
-        path: path.to_path_buf(),
-        decode: decode.clone(),
-    });
-    decode
 }
 
 fn is_ogg_path(path: &Path) -> bool {
@@ -1530,12 +1536,12 @@ mod tests {
             })
         };
         let p = Path::new("/tmp/same.ogg");
-        let r1 = decode_cached_with(p, &mut cache, &mut fake);
-        let r2 = decode_cached_with(p, &mut cache, &mut fake);
-        let r3 = decode_cached_with(Path::new("/tmp/other.ogg"), &mut cache, &mut fake);
-        assert!(r1.is_ok());
-        assert!(r2.is_ok());
-        assert!(r3.is_ok());
+        let first = decode_cached_with(p, &mut cache, &mut fake)
+            .expect("first decode should succeed") as *const OggDecode;
+        let second = decode_cached_with(p, &mut cache, &mut fake)
+            .expect("cached decode should succeed") as *const OggDecode;
+        assert_eq!(first, second);
+        assert!(decode_cached_with(Path::new("/tmp/other.ogg"), &mut cache, &mut fake).is_ok());
         assert_eq!(calls, 2);
     }
 

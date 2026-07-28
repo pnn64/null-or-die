@@ -546,18 +546,27 @@ where
         (beats, setup.fp_size)
     };
     let kernel = make_kernel(cfg.kernel_type);
-    let post = if cfg.kernel_target == KernelTarget::Accumulator {
-        convolve_wrap_5x5(&acc, rows, cols, &kernel)
+    let source = if cfg.kernel_target == KernelTarget::Accumulator {
+        &acc
     } else {
-        convolve_wrap_5x5(&digest, rows, cols, &kernel)
+        &digest
     };
-    let flat = flatten_columns_sum(&post, rows, cols);
+    let (post, flat) = if want_plot || stream.is_some() {
+        let post = convolve_wrap_5x5(source, rows, cols, &kernel);
+        let flat = flatten_columns_sum(&post, rows, cols);
+        (Some(post), flat)
+    } else {
+        (None, convolve_wrap_5x5_flat(source, rows, cols, &kernel))
+    };
     let conv_stats = estimate_from_convolution(&flat, setup.actual_step_sec, cfg.magic_offset_ms)?;
     if let Some(s) = stream.as_deref_mut() {
         (s.emit)(BiasStreamEvent::Convolution(BiasStreamConvolution {
             rows,
             cols,
-            post_kernel: post.clone(),
+            post_kernel: post
+                .as_ref()
+                .expect("streamed estimates always retain convolution rows")
+                .clone(),
             convolution: flat.clone(),
             edge_discard: conv_stats.convolution.edge_discard,
         }));
@@ -605,14 +614,14 @@ where
                 acc,
                 digest,
                 beats,
-                post,
+                post.expect("plot estimates always retain convolution rows"),
                 flat,
                 bias_ms,
                 edge_discard,
             ),
         }))
     } else {
-        if let Some(s) = stream.as_deref_mut() {
+        if let Some(s) = stream {
             (s.emit)(BiasStreamEvent::Done(conv_stats.estimate));
         }
         Ok(BiasResult::Estimate(conv_stats.estimate))
@@ -777,6 +786,7 @@ struct SpectrogramCtx {
     fft: Arc<dyn Fft<f64>>,
     window: Vec<f64>,
     buf: Vec<Complex<f64>>,
+    scratch: Vec<Complex<f64>>,
     out: Vec<f64>,
 }
 
@@ -784,10 +794,12 @@ impl SpectrogramCtx {
     fn new(nperseg: usize) -> Self {
         let mut planner = FftPlanner::<f64>::new();
         let fft = planner.plan_fft_forward(nperseg);
+        let scratch_len = fft.get_inplace_scratch_len();
         Self {
             fft,
             window: hann_periodic(nperseg),
             buf: vec![Complex::new(0.0, 0.0); nperseg],
+            scratch: vec![Complex::new(0.0, 0.0); scratch_len],
             out: Vec::new(),
         }
     }
@@ -1002,7 +1014,7 @@ fn spectrogram_log_full_into(
             sp.buf[i].re = f64::from(samples[base + i]) * sp.window[i];
             sp.buf[i].im = 0.0;
         }
-        sp.fft.process(&mut sp.buf);
+        sp.fft.process_with_scratch(&mut sp.buf, &mut sp.scratch);
         for r in 0..rows {
             let v = sp.buf[r];
             sp.out[r * cols + c] = (v.re.mul_add(v.re, v.im * v.im) + EPS).log2();
@@ -1035,7 +1047,7 @@ fn spectrogram_log_into(
             sp.buf[i].re = f64::from(samples[base + i]) * sp.window[i];
             sp.buf[i].im = 0.0;
         }
-        sp.fft.process(&mut sp.buf);
+        sp.fft.process_with_scratch(&mut sp.buf, &mut sp.scratch);
         for r in 0..rows {
             let v = sp.buf[r];
             sp.out[r * cols + c] = (v.re.mul_add(v.re, v.im * v.im) + EPS).log2();
@@ -1150,15 +1162,15 @@ fn make_kernel(kind: BiasKernel) -> [f64; 25] {
 fn convolve_wrap_5x5(input: &[f64], rows: usize, cols: usize, kernel: &[f64; 25]) -> Vec<f64> {
     let mut out = vec![0.0; rows * cols];
     for r in 0..rows {
+        let rr = wrap_5(r, rows);
         for c in 0..cols {
+            let cc = wrap_5(c, cols);
             let mut sum = 0.0;
             for kr in 0..5 {
                 for kc in 0..5 {
                     // scipy.signal.convolve2d uses true convolution (kernel flipped),
                     // not correlation.
-                    let rr = wrap_idx(r as isize - kr as isize + 2, rows);
-                    let cc = wrap_idx(c as isize - kc as isize + 2, cols);
-                    sum += input[rr * cols + cc] * kernel[kr * 5 + kc];
+                    sum += input[rr[kr] * cols + cc[kc]] * kernel[kr * 5 + kc];
                 }
             }
             out[r * cols + c] = sum;
@@ -1167,8 +1179,30 @@ fn convolve_wrap_5x5(input: &[f64], rows: usize, cols: usize, kernel: &[f64; 25]
     out
 }
 
-fn wrap_idx(i: isize, len: usize) -> usize {
-    i.rem_euclid(len as isize) as usize
+fn convolve_wrap_5x5_flat(input: &[f64], rows: usize, cols: usize, kernel: &[f64; 25]) -> Vec<f64> {
+    let mut out = vec![0.0; cols];
+    for r in 0..rows {
+        let rr = wrap_5(r, rows);
+        for (c, out_value) in out.iter_mut().enumerate() {
+            let cc = wrap_5(c, cols);
+            let mut sum = 0.0;
+            for kr in 0..5 {
+                for kc in 0..5 {
+                    sum += input[rr[kr] * cols + cc[kc]] * kernel[kr * 5 + kc];
+                }
+            }
+            *out_value += sum;
+        }
+    }
+    out
+}
+
+fn wrap_5(center: usize, len: usize) -> [usize; 5] {
+    let plus_1 = if center + 1 == len { 0 } else { center + 1 };
+    let plus_2 = if plus_1 + 1 == len { 0 } else { plus_1 + 1 };
+    let minus_1 = if center == 0 { len - 1 } else { center - 1 };
+    let minus_2 = if minus_1 == 0 { len - 1 } else { minus_1 - 1 };
+    [plus_2, plus_1, center, minus_1, minus_2]
 }
 
 fn flatten_columns_sum(matrix: &[f64], rows: usize, cols: usize) -> Vec<f64> {
@@ -1410,7 +1444,8 @@ mod tests {
     use super::{
         BeatWindow, BiasCfg, BiasRuntime, BiasStreamCfg, BiasStreamEvent, Setup, SpectrogramCtx,
         StreamSink, build_fingerprints_full, build_fingerprints_legacy, build_setup,
-        estimate_bias_with_beat_fn, estimate_bias_with_beat_fn_reuse, estimate_bias_with_setup,
+        convolve_wrap_5x5, convolve_wrap_5x5_flat, estimate_bias_with_beat_fn,
+        estimate_bias_with_beat_fn_reuse, estimate_bias_with_setup, flatten_columns_sum,
         make_kernel, percentile,
     };
     use crate::model::{BiasKernel, KernelTarget};
@@ -1442,6 +1477,38 @@ mod tests {
         assert_eq!(rising[2], 0.0);
         assert!(rising[0] > rising[4]);
         assert_eq!(loud[2], 10.0);
+    }
+
+    #[test]
+    fn wrapped_convolution_matches_direct_indexing() {
+        for (rows, cols) in [(1, 8), (2, 9), (7, 11)] {
+            let input = (0..rows * cols)
+                .map(|i| ((i * 17 + 3) % 29) as f64 * 0.125)
+                .collect::<Vec<_>>();
+            let kernel = make_kernel(BiasKernel::Rising);
+            let mut expected = vec![0.0; rows * cols];
+            for r in 0..rows {
+                for c in 0..cols {
+                    let mut sum = 0.0;
+                    for kr in 0..5 {
+                        for kc in 0..5 {
+                            let rr =
+                                (r as isize - kr as isize + 2).rem_euclid(rows as isize) as usize;
+                            let cc =
+                                (c as isize - kc as isize + 2).rem_euclid(cols as isize) as usize;
+                            sum += input[rr * cols + cc] * kernel[kr * 5 + kc];
+                        }
+                    }
+                    expected[r * cols + c] = sum;
+                }
+            }
+            let actual = convolve_wrap_5x5(&input, rows, cols, &kernel);
+            assert_eq!(actual, expected);
+            assert_eq!(
+                convolve_wrap_5x5_flat(&input, rows, cols, &kernel),
+                flatten_columns_sum(&expected, rows, cols)
+            );
+        }
     }
 
     #[test]
