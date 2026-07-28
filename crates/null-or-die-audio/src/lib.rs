@@ -1,12 +1,18 @@
 use std::fs::File;
-use std::io::BufReader;
 use std::path::Path;
 use std::process::Command;
 
-use lewton::inside_ogg::OggStreamReader;
+use symphonia::core::audio::{AudioBufferRef, Signal};
+use symphonia::core::codecs::{DecoderOptions, CODEC_TYPE_NULL};
+use symphonia::core::conv::IntoSample;
+use symphonia::core::errors::Error as SymphoniaError;
+use symphonia::core::formats::FormatOptions;
+use symphonia::core::io::MediaSourceStream;
+use symphonia::core::meta::MetadataOptions;
+use symphonia::core::probe::Hint;
+use symphonia::core::sample::Sample;
 
 const PCM_INV_SCALE: f32 = 1.0 / 32768.0;
-const OGG_BUF_CAP: usize = 256 * 1024;
 
 #[derive(Debug, Clone)]
 pub struct OggDecode {
@@ -15,23 +21,32 @@ pub struct OggDecode {
 }
 
 pub fn decode_ogg_mono_like_python(path: &Path) -> Result<OggDecode, String> {
-    let (sample_rate_hz, source_channels) = probe_ogg_header(path)?;
     match decoder_pref().as_deref() {
-        Some("lewton") | None => return decode_ogg_lewton(path),
         Some("ffmpeg") => {
+            let (sample_rate_hz, source_channels) = probe_ogg_header(path)?;
             return decode_ogg_ffmpeg(path, sample_rate_hz, source_channels);
         }
-        Some("auto") => {}
+        Some("symphonia") | Some("auto") | None => {}
         _ => {}
     }
-    match decode_ogg_ffmpeg(path, sample_rate_hz, source_channels) {
+    match decode_ogg_symphonia(path) {
         Ok(decoded) => Ok(decoded),
-        Err(ffmpeg_err) => match decode_ogg_lewton(path) {
-            Ok(decoded) => Ok(decoded),
-            Err(lewton_err) => Err(format!(
-                "{ffmpeg_err}; fallback lewton decode failed: {lewton_err}"
-            )),
-        },
+        Err(symphonia_err) => {
+            let (sample_rate_hz, source_channels) = match probe_ogg_header(path) {
+                Ok(v) => v,
+                Err(probe_err) => {
+                    return Err(format!(
+                        "symphonia decode failed: {symphonia_err}; ffmpeg fallback could not probe header: {probe_err}"
+                    ));
+                }
+            };
+            match decode_ogg_ffmpeg(path, sample_rate_hz, source_channels) {
+                Ok(decoded) => Ok(decoded),
+                Err(ffmpeg_err) => Err(format!(
+                    "symphonia decode failed: {symphonia_err}; fallback ffmpeg decode failed: {ffmpeg_err}"
+                )),
+            }
+        }
     }
 }
 
@@ -44,12 +59,33 @@ fn decoder_pref() -> Option<String> {
 
 fn probe_ogg_header(path: &Path) -> Result<(u32, usize), String> {
     let file = File::open(path).map_err(|e| format!("open {} failed: {e}", path.display()))?;
-    let reader = OggStreamReader::new(BufReader::with_capacity(OGG_BUF_CAP, file))
+    let mss = MediaSourceStream::new(Box::new(file), Default::default());
+    let mut hint = Hint::new();
+    hint.with_extension("ogg");
+    let probed = symphonia::default::get_probe()
+        .format(
+            &hint,
+            mss,
+            &FormatOptions::default(),
+            &MetadataOptions::default(),
+        )
         .map_err(|e| format!("ogg header parse {} failed: {e}", path.display()))?;
-    Ok((
-        reader.ident_hdr.audio_sample_rate,
-        usize::from(reader.ident_hdr.audio_channels),
-    ))
+    let track = probed
+        .format
+        .tracks()
+        .iter()
+        .find(|t| t.codec_params.codec != CODEC_TYPE_NULL)
+        .ok_or_else(|| format!("ogg {} has no usable audio track", path.display()))?;
+    let sample_rate_hz = track
+        .codec_params
+        .sample_rate
+        .ok_or_else(|| format!("ogg {} missing sample rate", path.display()))?;
+    let source_channels = track
+        .codec_params
+        .channels
+        .map(|c| c.count())
+        .ok_or_else(|| format!("ogg {} missing channel layout", path.display()))?;
+    Ok((sample_rate_hz, source_channels))
 }
 
 fn decode_ogg_ffmpeg(
@@ -85,23 +121,116 @@ fn decode_ogg_ffmpeg(
     })
 }
 
-fn decode_ogg_lewton(path: &Path) -> Result<OggDecode, String> {
+fn decode_ogg_symphonia(path: &Path) -> Result<OggDecode, String> {
     let file = File::open(path).map_err(|e| format!("open {} failed: {e}", path.display()))?;
-    let mut reader = OggStreamReader::new(BufReader::with_capacity(OGG_BUF_CAP, file))
-        .map_err(|e| format!("ogg header parse {} failed: {e}", path.display()))?;
-    let sample_rate_hz = reader.ident_hdr.audio_sample_rate;
-    let source_channels = usize::from(reader.ident_hdr.audio_channels);
+    let mss = MediaSourceStream::new(Box::new(file), Default::default());
+    let mut hint = Hint::new();
+    hint.with_extension("ogg");
+    let probed = symphonia::default::get_probe()
+        .format(
+            &hint,
+            mss,
+            &FormatOptions::default(),
+            &MetadataOptions::default(),
+        )
+        .map_err(|e| format!("ogg probe {} failed: {e}", path.display()))?;
+    let mut format = probed.format;
+    let track = format
+        .tracks()
+        .iter()
+        .find(|t| t.codec_params.codec != CODEC_TYPE_NULL)
+        .ok_or_else(|| format!("ogg {} has no usable audio track", path.display()))?;
+    let track_id = track.id;
+    let codec_params = track.codec_params.clone();
+    let sample_rate_hz = codec_params
+        .sample_rate
+        .ok_or_else(|| format!("ogg {} missing sample rate", path.display()))?;
+    let source_channels = codec_params
+        .channels
+        .map(|c| c.count())
+        .ok_or_else(|| format!("ogg {} missing channel layout", path.display()))?;
+    let mut decoder = symphonia::default::get_codecs()
+        .make(&codec_params, &DecoderOptions::default())
+        .map_err(|e| format!("ogg decoder init {} failed: {e}", path.display()))?;
+    // Lewton retains the encoder-delay samples at the start of the stream and
+    // trims only the end padding using the final granule position. With gapless
+    // disabled, symphonia delivers every decoded frame (delay + content + end
+    // padding), so we mirror lewton by trimming exactly `padding` frames off
+    // the tail of the assembled mono buffer.
+    let end_padding_frames = codec_params.padding.unwrap_or(0) as usize;
     let mut mono = Vec::new();
-    while let Some(packet) = reader
-        .read_dec_packet()
-        .map_err(|e| format!("ogg decode {} failed: {e}", path.display()))?
-    {
-        append_python_mono_like(&packet, source_channels, &mut mono);
+    loop {
+        let packet = match format.next_packet() {
+            Ok(p) => p,
+            Err(SymphoniaError::IoError(ref e))
+                if e.kind() == std::io::ErrorKind::UnexpectedEof =>
+            {
+                break;
+            }
+            Err(SymphoniaError::ResetRequired) => break,
+            Err(e) => return Err(format!("ogg read {} failed: {e}", path.display())),
+        };
+        if packet.track_id() != track_id {
+            continue;
+        }
+        let audio_buf = match decoder.decode(&packet) {
+            Ok(b) => b,
+            Err(SymphoniaError::DecodeError(_)) => continue,
+            Err(e) => return Err(format!("ogg decode {} failed: {e}", path.display())),
+        };
+        append_symphonia_buffer_python_mono_like(&audio_buf, source_channels, &mut mono);
+    }
+    if end_padding_frames > 0 && end_padding_frames <= mono.len() {
+        mono.truncate(mono.len() - end_padding_frames);
     }
     Ok(OggDecode {
         sample_rate_hz,
         mono,
     })
+}
+
+fn append_symphonia_buffer_python_mono_like(
+    buf: &AudioBufferRef<'_>,
+    source_channels: usize,
+    out: &mut Vec<f32>,
+) {
+    match buf {
+        AudioBufferRef::U8(b) => append_planar_python_mono_like(b.as_ref(), source_channels, out),
+        AudioBufferRef::U16(b) => append_planar_python_mono_like(b.as_ref(), source_channels, out),
+        AudioBufferRef::U24(b) => append_planar_python_mono_like(b.as_ref(), source_channels, out),
+        AudioBufferRef::U32(b) => append_planar_python_mono_like(b.as_ref(), source_channels, out),
+        AudioBufferRef::S8(b) => append_planar_python_mono_like(b.as_ref(), source_channels, out),
+        AudioBufferRef::S16(b) => append_planar_python_mono_like(b.as_ref(), source_channels, out),
+        AudioBufferRef::S24(b) => append_planar_python_mono_like(b.as_ref(), source_channels, out),
+        AudioBufferRef::S32(b) => append_planar_python_mono_like(b.as_ref(), source_channels, out),
+        AudioBufferRef::F32(b) => append_planar_python_mono_like(b.as_ref(), source_channels, out),
+        AudioBufferRef::F64(b) => append_planar_python_mono_like(b.as_ref(), source_channels, out),
+    }
+}
+
+fn append_planar_python_mono_like<S>(
+    buf: &symphonia::core::audio::AudioBuffer<S>,
+    source_channels: usize,
+    out: &mut Vec<f32>,
+) where
+    S: Sample + IntoSample<i16> + Copy,
+{
+    let spec_channels = buf.spec().channels.count();
+    let channels = spec_channels.min(source_channels.max(1));
+    let frames = buf.frames();
+    if channels == 0 || frames == 0 {
+        return;
+    }
+    let mut planes: Vec<Vec<i16>> = Vec::with_capacity(channels);
+    for ch in 0..channels {
+        let plane = buf.chan(ch);
+        let mut converted: Vec<i16> = Vec::with_capacity(frames);
+        for s in &plane[..frames] {
+            converted.push((*s).into_sample());
+        }
+        planes.push(converted);
+    }
+    append_python_mono_like(&planes, source_channels, out);
 }
 
 fn mono_from_interleaved_pcm_i16(bytes: &[u8], channels: usize) -> Vec<f32> {
