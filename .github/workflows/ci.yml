@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-linux:
+    name: Build Linux x86_64
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Rust
+        run: |
+          rustup default stable
+          rustup target add x86_64-unknown-linux-gnu
+
+      - name: Build
+        run: cargo build --release -p null-or-die --target x86_64-unknown-linux-gnu
+
+  build-windows:
+    name: Build Windows x86_64
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Rust
+        shell: pwsh
+        run: |
+          rustup default stable
+          rustup target add x86_64-pc-windows-msvc
+
+      - name: Build
+        shell: pwsh
+        run: cargo build --release -p null-or-die --target x86_64-pc-windows-msvc
+
+  build-macos:
+    name: Build macOS Universal Binary
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Rust
+        run: |
+          rustup default stable
+          rustup target add x86_64-apple-darwin aarch64-apple-darwin
+
+      - name: Build x86_64
+        run: cargo build --release -p null-or-die --target x86_64-apple-darwin
+
+      - name: Build aarch64
+        run: cargo build --release -p null-or-die --target aarch64-apple-darwin
+
+      - name: Create universal binary
+        run: |
+          lipo -create \
+            target/x86_64-apple-darwin/release/null-or-die \
+            target/aarch64-apple-darwin/release/null-or-die \
+            -output null-or-die
