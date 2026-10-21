@@ -21,6 +21,13 @@ Why:
 
 `analyze` and `parity` now share the native bias math path.
 
+OGG/Vorbis decoding uses Symphonia 0.6.1, matching deadsync's decoder and
+16-bit PCM conversion, including its compatibility handling for legacy OGG
+granule positions. Stereo analysis still takes the signed maximum of the two
+channels per frame, matching nine-or-null. `NOD_AUDIO_DECODER=symphonia` (the
+default) selects native decoding; `ffmpeg` selects the external decoder, and
+`auto` tries FFmpeg before falling back to Symphonia.
+
 For `harness`, `--source-root` should point to the Python package root containing `nine_or_null/` (for example `nine-or-null-0.8.0/nine-or-null`). If omitted, `null-or-die` auto-detects that sibling path from the current working directory.
 
 ## Baseline layout
